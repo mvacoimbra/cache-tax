@@ -25,6 +25,9 @@ export type CachetaxActArgs = { id: string; value?: string }
 
 export type CachetaxActResult = { message?: string }
 
+// One named component cache-tax draws, for the Components tab of /mods (the hub's catalog).
+export type CachetaxCatalogEntry = { id: string; name: string; help?: string; tree: unknown }
+
 // Where the prompt cache stands. `coldAt` is when it goes cold unless a request reads it
 // first (null before the first request, after compaction, or once cold); `warmUntil` is when
 // the keep-warm window ends (null while off).
@@ -40,6 +43,7 @@ declare module 'claude-code' {
       panel: (args: CachetaxPanelArgs) => Promise<CachetaxPanel>
       act: (args: CachetaxActArgs) => Promise<CachetaxActResult>
       state: () => Promise<CachetaxState>
+      catalog: (args: CachetaxPanelArgs) => Promise<CachetaxCatalogEntry[]>
     }
   }
 }

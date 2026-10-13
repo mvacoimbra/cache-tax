@@ -1,5 +1,5 @@
-import type { EngineInterface, Register } from 'claude-code'
-import type { CachetaxActArgs, CachetaxActResult, CachetaxItem, CachetaxPanel, CachetaxState } from '../types'
+import type { ElementTable, EngineInterface, Register, RenderElement, RenderSurface } from 'claude-code'
+import type { CachetaxActArgs, CachetaxActResult, CachetaxCatalogEntry, CachetaxItem, CachetaxPanel, CachetaxState } from '../types'
 import { STRINGS } from './i18n'
 import type { Lang, Strings } from './i18n'
 import { statusIcons } from './status-icons'
@@ -402,6 +402,53 @@ async function skinsShowsCache($: EngineInterface): Promise<boolean> {
   }
 }
 
+type BandState = 'warm' | 'cold' | 'stopped' | 'unknown'
+
+/** The row above the prompt: the cube in the state's colour, `cache-tax · <state> · <text>`. */
+export function bandRow(ui: ElementTable, surface: RenderSurface, state: BandState, text: string, light: boolean, noColor: boolean): RenderElement {
+  const { Box, Text } = ui
+  const color = noColor ? undefined : state === 'warm' ? 'success' : state === 'cold' ? (light ? '#c15f3c' : '#d97757') : undefined
+  const asset = statusIcons[light ? 'light' : 'dark'][state === 'warm' || state === 'cold' ? state : 'neutral']
+  const icon = noColor ? Text({ bold: true, children: ['[>]'] })
+    : surface === 'terminal' && 'Image' in ui ? ui.Image({ source: { png: asset.png }, columns: 3, rows: 1, alt: '[>]' })
+    : surface === 'desktop' && 'Svg' in ui ? ui.Svg({ source: asset.svg, width: 18, height: 18, alt: 'Cache Tax' })
+    : Text({ color, bold: true, children: ['[>]'] })
+  return Box({ flexDirection: 'row', alignItems: 'center', children: [
+    Box({ flexShrink: 0, children: [icon] }),
+    Text({ children: [
+      ' cache-tax · ',
+      Text({ color, bold: true, children: [state] }),
+      ` · ${text}`,
+    ] }),
+  ] })
+}
+
+/** Every component cache-tax draws, named, for the Components tab of /mods. */
+export function catalogOf(ui: ElementTable, surface: RenderSurface, lang: Lang): CachetaxCatalogEntry[] {
+  const { Text } = ui
+  const pt = lang === 'pt'
+  const entry = (id: string, en: string, ptName: string, helpEn: string, helpPt: string, tree: RenderElement): CachetaxCatalogEntry =>
+    ({ id, name: pt ? ptName : en, help: pt ? helpPt : helpEn, tree })
+  const warm = 'keepwarm 5h12m left · ping in 38m · last ping read 157k $0.05'
+  return [
+    entry('band-warm', 'Band row: warm', 'Linha da faixa: aquecido', 'Above the prompt while keep warm runs and the cache is warm', 'Acima do prompt com o aquecimento ligado e o cache aquecido', bandRow(ui, surface, 'warm', warm, false, false)),
+    entry('band-cold', 'Band row: cold', 'Linha da faixa: frio', 'The cache went cold: the first ping waits for the next turn', 'O cache esfriou: o primeiro ping espera o próximo turno', bandRow(ui, surface, 'cold', 'keepwarm 4h59m left · cold now, first ping 50m after the next turn', false, false)),
+    entry('band-unknown', 'Band row: before the first turn', 'Linha da faixa: antes do primeiro turno', 'Grey cube: nothing cached yet, or reset by compaction', 'Cubo cinza: nada em cache ainda, ou zerado pela compactação', bandRow(ui, surface, 'unknown', 'keepwarm 6h00m left · waiting for the first turn', false, false)),
+    entry('band-stopped', 'Band row: stopped', 'Linha da faixa: parado', 'The loop stopped, with its reason', 'O ciclo parou, com o motivo', bandRow(ui, surface, 'stopped', 'keepwarm stopped: the ping read 0 and wrote 157k tokens ($3.14), the cache was already gone', false, false)),
+    entry('band-light', 'Band row: light theme', 'Linha da faixa: tema claro', "The cube's light-theme colours", 'As cores do cubo no tema claro', bandRow(ui, surface, 'cold', 'keepwarm 2h10m left · cold now, first ping 50m after the next turn', true, false)),
+    entry('band-no-color', 'Band row: NO_COLOR', 'Linha da faixa: NO_COLOR', 'With NO_COLOR set: a bold [>] and no colour', 'Com NO_COLOR: um [>] em negrito e sem cor', bandRow(ui, surface, 'warm', warm, false, true)),
+    entry('status-line', 'Status line text', 'Texto da linha de status', 'On a surface without the band, the same words in the status line', 'Numa superfície sem a faixa, as mesmas palavras na linha de status', Text({ dimColor: true, children: [warm] })),
+    entry('guard-refusal', 'Cold send held once', 'Envio a frio segurado', 'The guard dropping a cold send once, with its price (guard: stop once)', 'A proteção segurando um envio a frio uma vez, com o preço (proteção: segurar uma vez)',
+      Text({ color: 'warning', children: ['cache-tax: the prompt cache went cold 2h00m ago. Sending this re-writes up to 200,502 tokens at $20/MTok = $4.01 (a warm turn would have cost $0.05). Send it again to pay it, and keepwarm will then hold the cache for 3h00m. Or /clear and start from a note.'] })),
+    entry('guard-warning', 'Cold send warned', 'Envio a frio avisado', 'The same price, logged while the send goes through (guard: warn only)', 'O mesmo preço, registrado enquanto o envio passa (proteção: só avisar)',
+      Text({ dimColor: true, children: ['the prompt cache went cold 2h00m ago. Sending this re-writes up to 200,502 tokens at $20/MTok = $4.01 (a warm turn would have cost $0.05). Sending anyway; keepwarm will hold the cache for 3h00m once it lands.'] })),
+    entry('cold-write-paid', 'Cold write paid', 'Escrita a frio paga', 'Logged after a cold write, as keep warm arms itself for three hours', 'Registrado depois de uma escrita a frio, quando o aquecimento liga sozinho por três horas',
+      Text({ dimColor: true, children: ['cold write of 157k tokens paid ($3.14). Keeping the cache warm for 3h00m so it is not paid again today; turn it off in /mods to stop.'] })),
+    entry('resume-cold', 'Resuming cold', 'Retomando a frio', 'Logged when a resumed session starts with a cold cache', 'Registrado quando uma sessão retomada começa com o cache frio',
+      Text({ dimColor: true, children: ['resuming cold. The first message re-writes 200,502 tokens, about $4.01. /clear and paste a summary if you only need the conclusions.'] })),
+  ]
+}
+
 export function freshState(): State {
   return {
     hasBand: false, sid: '', deadline: 0, every: PING_AFTER_MS, always: false, lastRequestAt: 0, lastModel: null, ctx: 0, compacted: false,
@@ -425,6 +472,7 @@ export const register: Register = on => {
         panel: async () => ({ title: '', sections: [] }),
         act: async () => ({}),
         state: async () => ({ phase: 'unknown' as const, coldAt: null, warmUntil: null }),
+        catalog: async () => [],
       },
     }
   })
@@ -437,6 +485,8 @@ export const register: Register = on => {
   on('cachetax.act', async ($, e) => ({ value: await actOn($, s, e, lang) }))
 
   on('cachetax.state', async $ => ({ value: stateOf(s, await $.clock.now()) }))
+
+  on('cachetax.catalog', async ($, e) => ({ value: catalogOf($.ui.resolve({ surface: e.surface, component: 'AbovePrompt' }), e.surface, e.lang === 'pt' ? 'pt' : 'en') }))
 
   on('config.set', { key: 'theme' }, async ($, e, next) => {
     const result = await next(e)
@@ -456,24 +506,8 @@ export const register: Register = on => {
     const text = statusText(s, now)
     if (!text || (s.deadline && now >= s.deadline)) return rest
     const state = s.stopped ? 'stopped' : !s.lastRequestAt || s.compacted ? 'unknown' : isCold(s, now) ? 'cold' : 'warm'
-    const color = noColor ? undefined : state === 'warm' ? 'success' : state === 'cold' ? (light ? '#c15f3c' : '#d97757') : undefined
-    const { Box, Text } = $.ui.resolve(e)
-    const asset = statusIcons[light ? 'light' : 'dark'][state === 'warm' || state === 'cold' ? state : 'neutral']
-    const icon = noColor ? Text({ bold: true, children: ['[>]'] })
-      : e.surface === 'terminal' ? $.ui.resolve(e).Image({ source: { png: asset.png }, columns: 3, rows: 1, alt: '[>]' })
-      : e.surface === 'desktop' ? $.ui.resolve(e).Svg({ source: asset.svg, width: 18, height: 18, alt: 'Cache Tax' })
-      : Text({ color, bold: true, children: ['[>]'] })
-    return Box({ flexDirection: 'column', children: [
-      rest,
-      Box({ flexDirection: 'row', alignItems: 'center', children: [
-        Box({ flexShrink: 0, children: [icon] }),
-        Text({ children: [
-          ' cache-tax · ',
-          Text({ color, bold: true, children: [state] }),
-          ` · ${text}`,
-        ] }),
-      ] }),
-    ] })
+    const { Box } = $.ui.resolve(e)
+    return Box({ flexDirection: 'column', children: [rest, bandRow($.ui.resolve(e), e.surface, state, text, light, noColor)] })
   })
 
   on('session.start', async ($, e, next) => {
