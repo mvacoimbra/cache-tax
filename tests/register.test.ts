@@ -37,6 +37,7 @@ const HUB: Plugin = {
     })
     on('command.run', { command: 'panel' }, async ($, e) => ({ text: JSON.stringify(await $.cachetax.panel({ lang: e.args === 'pt' ? 'pt' : 'en', surface: 'terminal', columns: 80 })) }))
     on('command.run', { command: 'state' }, async $ => ({ text: JSON.stringify(await $.cachetax.state()) }))
+    on('command.run', { command: 'catalog' }, async ($, e) => ({ text: JSON.stringify(await $.cachetax.catalog(JSON.parse(e.args))) }))
     on('command.run', { command: 'cache-tax' }, async ($, e) => {
       const words = String(e.args ?? '').trim().split(/\s+/).filter(Boolean)
       if (words[0] === 'guard') return { text: (await $.cachetax.act({ id: 'guard', value: words[1] ?? '' })).message ?? '' }
@@ -888,7 +889,7 @@ const SKINS: Plugin = {
   },
 }
 
-const ask = async ($: Parameters<Body>[0], command: 'panel' | 'state', args = '') =>
+const ask = async ($: Parameters<Body>[0], command: 'panel' | 'state' | 'catalog', args = '') =>
   JSON.parse((await $.command.run({ command, args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } } as CommandRunInput)).text ?? '')
 
 describe('the /mods tab', () => {
@@ -953,3 +954,22 @@ describe('the /mods tab', () => {
     expect(await ui.find({ type: 'Text', text: 'cache-tax' })).toBeUndefined()
   })
 })
+
+test('the catalog names every component cache-tax draws, on both surfaces and in Portuguese', async ($, on) => {
+  mock.clock(on, { now: START })
+  world(on, [])
+  await $.session.start({ ...session, surface: 'terminal', isInteractive: true })
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const entries: { id: string; name: string; tree: { type: string } }[] = await ask($, 'catalog', JSON.stringify({ lang: 'en', surface, columns: 80 }))
+    const ids = entries.map(entry => entry.id)
+
+    expect(ids).toEqual(['band-warm', 'band-cold', 'band-unknown', 'band-stopped', 'band-light', 'band-no-color', 'status-line', 'guard-refusal', 'guard-warning', 'cold-write-paid', 'resume-cold'])
+    expect(entries.every(entry => entry.name.length > 0 && (entry.tree.type === 'Box' || entry.tree.type === 'Text'))).toBe(true)
+    expect(JSON.stringify(entries[0]?.tree)).toContain(surface === 'terminal' ? '"Image"' : '"Svg"')
+  }
+
+  const pt: { name: string }[] = await ask($, 'catalog', JSON.stringify({ lang: 'pt', surface: 'terminal', columns: 80 }))
+  expect(pt[0]?.name).toBe('Linha da faixa: aquecido')
+})
+
