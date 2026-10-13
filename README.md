@@ -66,6 +66,8 @@ There are no slash commands: everything is in the Keep warm tab of `/mods`, in E
 | Keep warm | One press for 1h, 3h, 6h, 12h or 24h; a field for any other window (90m, 2h30m, or `6h every 2m`, a testing knob with a 1m floor that lasts only for that window); Every session, which arms six hours at each session start; Turn off, which stops the window and the every-session switch |
 | Guard | Stop a cold send once, the resend goes through (this mod's default), or warn only and send (the hook's default) |
 
+Every row and message this mod draws (the band row in each state, the status line text, the guard's messages) is named in the Components tab of `/mods`.
+
 With [skins](https://github.com/mvacoimbra/claude-skins) installed and its usage band on, the time until the cache goes cold shows in that band, and this mod's own row steps aside.
 
 The refusal, verbatim:
