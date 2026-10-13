@@ -878,3 +878,78 @@ describe('store per session', () => {
     expect([...store.keys()]).toEqual(['deadline:other', 'every:other'])
   })
 })
+
+// skins' usage band, standing in: it shows the time until the cache goes cold.
+const SKINS: Plugin = {
+  name: 'skins',
+  register(on) {
+    on('engine.create', async ($, e, next) => ({ ...(await next(e)), skins: { band: async () => false } }))
+    on('skins.band', () => ({ value: true }))
+  },
+}
+
+const ask = async ($: Parameters<Body>[0], command: 'panel' | 'state', args = '') =>
+  JSON.parse((await $.command.run({ command, args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } } as CommandRunInput)).text ?? '')
+
+describe('the /mods tab', () => {
+  test('no slash command is registered: everything is set in /mods', async ($, on) => {
+    mock.clock(on, { now: START })
+    const w = world(on, [])
+    await $.session.start({ ...session, surface: 'terminal', isInteractive: true })
+    expect(w.registered).toEqual([])
+  })
+
+  test('the tab shows the cache, the keep-warm window and the guard, in English or Portuguese', async ($, on) => {
+    mock.clock(on, { now: START })
+    world(on, [])
+    await $.session.start({ ...session, surface: 'terminal', isInteractive: true })
+    await $.turn.complete(turn())
+    await $.command.run(run('keepwarm', '90m'))
+
+    const en: CachetaxPanel = await ask($, 'panel', 'en')
+    expect(en.title).toBe('Keep warm')
+    expect(en.summary).toBe('warm · cold in 1h00m · keep warm 1h30m left')
+    expect(en.tone).toBe('ok')
+    expect(en.sections.map(section => section.id)).toEqual(['status', 'warm', 'guard'])
+    expect(en.refreshMs).toBe(15_000)
+    const warmItems = en.sections[1]?.items ?? []
+    expect(warmItems.map(item => ('id' in item ? item.id : item.kind))).toEqual(['window', 'custom', 'always', 'off', 'text'])
+
+    const pt: CachetaxPanel = await ask($, 'panel', 'pt')
+    expect(pt.title).toBe('Manter aquecido')
+    expect(pt.summary).toBe('aquecido · esfria em 1h00m · aquecimento por mais 1h30m')
+    expect(JSON.stringify(pt)).not.toContain('Keep warm for')
+  })
+
+  test('the state says when the cache goes cold and when the window ends', async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    world(on, [])
+    await $.session.start({ ...session, surface: 'terminal', isInteractive: true })
+    expect(await ask($, 'state')).toEqual({ phase: 'unknown', coldAt: null, warmUntil: null })
+
+    await $.turn.complete(turn())
+    await $.command.run(run('keepwarm', '90m'))
+    expect(await ask($, 'state')).toEqual({ phase: 'warm', coldAt: START + HOUR, warmUntil: START + 90 * MIN })
+
+    await $.command.run(run('keepwarm', 'off'))
+    await clock.advance(HOUR)
+    expect(await ask($, 'state')).toEqual({ phase: 'cold', coldAt: null, warmUntil: null })
+  })
+
+  test('a duration that does not read is refused with how to write one', async ($, on) => {
+    mock.clock(on, { now: START })
+    world(on, [])
+    await $.session.start({ ...session, surface: 'terminal', isInteractive: true })
+    expect((await $.command.run(run('keepwarm', 'soon'))).text).toBe('keep warm takes a window such as 6h or 90m')
+  })
+
+  test('with skins showing the countdown in its band, the line above the prompt steps aside', { plugins: [SKINS] }, async ($, on) => {
+    mock.clock(on, { now: START })
+    world(on, [])
+    await $.session.start({ ...session, surface: 'terminal', isInteractive: true })
+    await $.command.run(run('keepwarm', '90m'))
+    const ui = await $.ui.mount({ plugin: 'cache-tax', surface: 'terminal', component: 'AbovePrompt', props: bandProps })
+    expect(await ui.find({ type: 'Image' })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: 'cache-tax' })).toBeUndefined()
+  })
+})
