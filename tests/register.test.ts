@@ -1,10 +1,61 @@
-import { describe, expect, mock, test, tier } from 'claude-code/testing'
+import { describe, expect, mock, test as base, tier } from 'claude-code/testing'
+import type { Plugin, TestBody } from 'claude-code/testing'
 import type { CommandRunInput, ConfigSetInput, ModelForkResult, On, PromptSubmitInput, RenderPropsOf, SessionStartInput, TurnCompleteInput, TurnUsage } from 'claude-code'
+import type { CachetaxItem, CachetaxPanel } from '../types'
 
 import { statusIcons } from '../hooks/status-icons'
 import { fmtDuration, freshState, parseDuration, resetForClear, seedFromResume } from '../hooks/register'
 
 tier('user')
+
+// The keep-warm window and the guard are set in the /mods pane, through `$.cachetax`; only
+// another module can call a plugin's noun. This stand-in for the hub answers the commands the
+// tests type, as the pane's presses would: `keepwarm [<window> [every <period>] | always | off |
+// status]` and `cache-tax [status | guard warn|refuse]`.
+const HUB: Plugin = {
+  name: 'hub',
+  register(on) {
+    // The status section as lines of label and value; the stand-in runs apart from this file.
+    const statusLines = (panel: CachetaxPanel): string =>
+      (panel.sections.find(section => section.id === 'status')?.items ?? [])
+        .filter((item): item is Extract<CachetaxItem, { kind: 'info' }> => item.kind === 'info')
+        .map(item => `${item.label.padEnd(13)}${item.value}`)
+        .join('\n')
+    on('command.run', { command: 'keepwarm' }, async ($, e) => {
+      const words = String(e.args ?? '').trim()
+      if (words === 'status') {
+        const panel = await $.cachetax.panel({ lang: 'en', surface: 'terminal', columns: 80 })
+        const line = statusLines(panel).split('\n').find(l => l.startsWith('Keep warm')) ?? ''
+        const value = line.slice(13)
+        return { text: value === 'off' || value.startsWith('off until') ? 'keepwarm is off' : value }
+      }
+      const act = words === '' ? { id: 'window', value: '6h' }
+        : words === 'off' ? { id: 'off' }
+        : words === 'always' ? { id: 'always', value: 'on' }
+        : { id: 'custom', value: words }
+      return { text: (await $.cachetax.act(act)).message ?? '' }
+    })
+    on('command.run', { command: 'panel' }, async ($, e) => ({ text: JSON.stringify(await $.cachetax.panel({ lang: e.args === 'pt' ? 'pt' : 'en', surface: 'terminal', columns: 80 })) }))
+    on('command.run', { command: 'state' }, async $ => ({ text: JSON.stringify(await $.cachetax.state()) }))
+    on('command.run', { command: 'cache-tax' }, async ($, e) => {
+      const words = String(e.args ?? '').trim().split(/\s+/).filter(Boolean)
+      if (words[0] === 'guard') return { text: (await $.cachetax.act({ id: 'guard', value: words[1] ?? '' })).message ?? '' }
+      return { text: statusLines(await $.cachetax.panel({ lang: 'en', surface: 'terminal', columns: 80 })) }
+    })
+  },
+}
+
+type Body = TestBody
+
+// Every test runs beside the hub stand-in.
+function test(name: string, body: Body): void
+function test(name: string, options: Record<string, unknown>, body: Body): void
+function test(name: string, a: unknown, b?: unknown): void {
+  const options = (b === undefined ? {} : a) as Record<string, unknown>
+  const body = (b === undefined ? a : b) as Body
+  const plugins = Array.isArray(options.plugins) ? options.plugins : []
+  ;(base as unknown as (n: string, o: Record<string, unknown>, f: Body) => void)(name, { ...options, plugins: [HUB, ...plugins] }, body)
+}
 
 const MIN = 60 * 1000
 const HOUR = 60 * MIN
@@ -57,7 +108,8 @@ function world(on: On, forkAnswers: ForkAnswer[], opts: { store?: Map<string, un
   on('session.id', () => ({ value: opts.sid ?? 'S1' }))
   on('session.model', () => ({ value: opts.model ?? 'claude-fable-5-1' }))
   on('session.usage', () => ({ value: { startedAt: START, context: { window: 1000000, tokens: opts.live?.tokens }, rateLimits: [] } }))
-  on('command.register', ($, e) => ({ value: { command: e.name } }))
+  const registered: string[] = []
+  on('command.register', ($, e) => { registered.push(e.name); return { value: { command: e.name } } })
   on('command.list', () => ({ value: (opts.commands ?? []).map(name => ({ name, description: '', source: 'plugin' as const })) }))
   on('turn.complete', ($, e) => ({ text: e.answer }))
   on('prompt.submit', ($, e) => { entered.push(e.text); return { text: e.text } })
@@ -75,7 +127,7 @@ function world(on: On, forkAnswers: ForkAnswer[], opts: { store?: Map<string, un
     const value: ModelForkResult = { isAnswered: true, text: 'warm', usage: { input_tokens: a.input ?? 2, output_tokens: a.out ?? 1, cache_read_input_tokens: a.read, cache_creation_input_tokens: a.write } }
     return { value }
   })
-  return { forks, status, logs, entered, reads }
+  return { forks, status, logs, entered, reads, registered }
 }
 
 const warm: ForkAnswer = { read: 200000, write: 0 }
@@ -182,12 +234,12 @@ describe('cache indicator', () => {
       await clock.advance(HOUR)
       expect((await ui.find({ type: 'Text', text: /^(warm|cold|unknown|stopped)$/ }))?.props.color).toBe('#d97757')
       expect((await ui.find({ type: 'Text', text: 'cache-tax' }))?.text).toMatch(/cold.*cold now/)
-      expect((await $.command.run(run('cache-tax', ''))).text).toMatch(/state       COLD/)
+      expect((await $.command.run(run('cache-tax', ''))).text).toMatch(/Cache        cold, last request/)
       expect(w.forks.length).toBe(0)
       expect((await ui.find({ text: /^other mod$/ }))?.text).toBe('other mod')
       await $.turn.complete(turn())
       expect((await ui.find({ type: 'Text', text: /^(warm|cold|unknown|stopped)$/ }))?.props.color).toBe('success')
-      expect((await $.command.run(run('cache-tax', ''))).text).toMatch(/state       warm/)
+      expect((await $.command.run(run('cache-tax', ''))).text).toMatch(/Cache        warm/)
       expect(w.status.filter(Boolean)).toEqual([])
       await $.command.run(run('keepwarm', 'off'))
       expect(await ui.find({ text: 'cache-tax' })).toBe(undefined)
@@ -365,8 +417,8 @@ describe('guard', () => {
     await clock.advance(50 * MIN)
     expect(w.forks.length).toBe(1)
     const card = await $.command.run(run('cache-tax', 'status'))
-    expect(card.text).toMatch(/session     1 cold write paid, \$4\.01/)
-    expect(card.text).toMatch(/keepwarm    on, 2h10m left/)
+    expect(card.text).toMatch(/This session 1 cold write paid, \$4\.01/)
+    expect(card.text).toMatch(/Keep warm    on, 2h10m left/)
   })
 
   test('context comes from the live window, not the turn\'s summed usage', async ($, on) => {
@@ -378,7 +430,7 @@ describe('guard', () => {
     live.tokens = 100000
     await $.turn.complete(turn({ usage: usage({ cache_read_input_tokens: 500000, cache_creation_input_tokens: 2000 }) }))
     const card = await $.command.run(run('cache-tax', 'status'))
-    expect(card.text).toMatch(/context     100,000 tokens/)
+    expect(card.text).toMatch(/Context      100,000 tokens/)
     expect(card.text).toMatch(/0 cold writes paid/)
     expect(w.status.at(-1)).toBe(undefined)
   })
@@ -573,7 +625,7 @@ describe('keepwarm', () => {
     await clock.advance(49 * MIN)
     expect(w.forks.length).toBe(1)
     const card = await $.command.run(run('cache-tax', ''))
-    expect(card.text).toMatch(/keepwarm    on, 5h10m left · ping in 50m · last ping read 200k \$0\.05 \(always\)/)
+    expect(card.text).toMatch(/Keep warm    on, 5h10m left · ping in 50m · last ping read 200k \$0\.05 \(always\)/)
     const off = await $.command.run(run('keepwarm', 'off'))
     expect(off.text).toBe('keepwarm is off, and no longer arms itself at session start')
     expect(store.has('always')).toBe(false)
@@ -601,8 +653,8 @@ describe('keepwarm', () => {
     await clock.advance(50 * MIN)
     expect(w.status.at(-1)).toBe('keepwarm 5h10m left · ping in 50m · last ping read 200k $0.05')
     const card = await $.command.run(run('cache-tax', ''))
-    expect(card.text).toMatch(/cold cost   \$0\.80 to re-write it \(warm turn \$0\.04\)/)
-    expect(card.text).toMatch(/break-even  up to 20 pings at the read rate cost one cold write, about 16h40m of idle at one ping per 50m/)
+    expect(card.text).toMatch(/Cold write   \$0\.80 to re-write it \(a warm turn \$0\.04\)/)
+    expect(card.text).toMatch(/Break-even   up to 20 pings at the read rate cost one cold write, about 16h40m of idle at one ping per 50m/)
   })
 
   test('a partial write, a zero read, or a full write stops the loop; a ping\'s own few tokens do not', async ($, on) => {
@@ -649,7 +701,7 @@ describe('keepwarm', () => {
     await $.session.start(session)
     await $.turn.complete(turn())
     const card = await $.command.run(run('cache-tax', ''))
-    expect(card.text).toMatch(/break-even  up to 80 pings at the read rate cost one cold write, about 2d 18h of idle at one ping per 50m/)
+    expect(card.text).toMatch(/Break-even   up to 80 pings at the read rate cost one cold write, about 2d 18h of idle at one ping per 50m/)
   })
 
   test('/keepwarm on a cold session schedules no fork before a turn, and does after one', async ($, on) => {
@@ -666,7 +718,7 @@ describe('keepwarm', () => {
     await clock.advance(60 * MIN)
     expect(w.forks.length).toBe(0)
     const card = await $.command.run(run('cache-tax', ''))
-    expect(card.text).toMatch(/keepwarm    on, 4h59m left · cold now, first ping 50m after the next turn/)
+    expect(card.text).toMatch(/Keep warm    on, 4h59m left · cold now, first ping 50m after the next turn/)
     await $.turn.complete(turn())
     expect(w.status.at(-1)).toBe('keepwarm 4h59m left · ping in 50m')
     await clock.advance(49 * MIN)
@@ -690,7 +742,7 @@ describe('keepwarm', () => {
     await clock.advance(1 * MIN)
     expect(w.forks.length).toBe(0)
     const r = await $.command.run(run('keepwarm', 'always'))
-    expect(r.text).toBe('keepwarm always on: every session starts with a 6h00m window; /keepwarm off turns it off for good. The cache is cold now, so the first ping comes 50m after the next turn')
+    expect(r.text).toBe('keepwarm always on: every session starts with a 6h00m window; Turn off in /mods ends it for good. The cache is cold now, so the first ping comes 50m after the next turn')
     await clock.advance(60 * MIN)
     expect(w.forks.length).toBe(0)
     await $.turn.complete(turn())

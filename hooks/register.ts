@@ -1,4 +1,7 @@
 import type { EngineInterface, Register } from 'claude-code'
+import type { CachetaxActArgs, CachetaxActResult, CachetaxItem, CachetaxPanel, CachetaxState } from '../types'
+import { STRINGS } from './i18n'
+import type { Lang, Strings } from './i18n'
 import { statusIcons } from './status-icons'
 
 const TTL_MS = 60 * 60 * 1000
@@ -249,10 +252,9 @@ async function ping($: EngineInterface, s: State) {
   await arm($, s)
 }
 
-/** The reply to an arming command; on a cold cache it says when the first ping can come. */
-function armedText(s: State, now: number, windowMs: number): string {
-  if (isCold(s, now)) return `keepwarm on for ${fmtDuration(windowMs)}. The cache is cold now, so the first ping comes ${fmtDuration(s.every)} after the next turn`
-  return `keepwarm on for ${fmtDuration(windowMs)}, a ping ${fmtDuration(s.every)} after each idle stretch keeps the cache read, not re-written`
+/** What arming a window answers; on a cold cache it says when the first ping can come. */
+function armedText(s: State, now: number, windowMs: number, t: Strings): string {
+  return isCold(s, now) ? t.messages.armedCold(fmtDuration(windowMs), fmtDuration(s.every)) : t.messages.armed(fmtDuration(windowMs), fmtDuration(s.every))
 }
 
 async function startWindow($: EngineInterface, s: State, windowMs: number, every: number) {
@@ -266,24 +268,138 @@ async function startWindow($: EngineInterface, s: State, windowMs: number, every
   await arm($, s)
 }
 
-function card(s: State, now: number): string {
-  const lines: string[] = []
-  lines.push(`${s.lastModel ?? 'model not seen yet'}`)
-  if (s.compacted) lines.push('state       reset by compaction, waiting for the first turn')
-  else if (!s.lastRequestAt) lines.push('state       no request yet this session')
-  else if (isCold(s, now)) lines.push(`state       COLD, last request ${fmtDuration(now - s.lastRequestAt)} ago`)
-  else lines.push(`state       warm, ${fmtDuration(s.lastRequestAt + TTL_MS - now)} left`)
-  lines.push(`context     ${s.ctx.toLocaleString('en-US')} tokens`)
-  lines.push(`cold cost   ${fmtUsd(coldUsd(s))} to re-write it (warm turn ${fmtUsd(warmUsd(s))})`)
-  const always = s.always ? ' (always)' : ''
-  const idle = s.always ? 'off until the next session start, which arms 6h00m (always)' : 'off (/keepwarm to arm it for 6h00m)'
-  lines.push(`keepwarm    ${s.deadline ? (statusText(s, now) ?? '').replace(/^keepwarm /, 'on, ') + always : s.stopped ? `stopped, ${s.stopped}${always}` : idle}`)
+// The windows the tab offers with one press; any other is typed.
+const WINDOWS = ['1h', '3h', '6h', '12h', '24h']
+
+const REFRESH_MS = 15 * 1000
+
+/** Where the cache stands, for another mod's countdown (`$.cachetax.state`). */
+export function stateOf(s: State, now: number): CachetaxState {
+  const known = s.lastRequestAt > 0 && !s.compacted
+  const cold = known && isCold(s, now)
+
+  return {
+    phase: s.stopped ? 'stopped' : !known ? 'unknown' : cold ? 'cold' : 'warm',
+    coldAt: known && !cold ? s.lastRequestAt + TTL_MS : null,
+    warmUntil: s.deadline > now ? s.deadline : null,
+  }
+}
+
+function keepWarmValue(s: State, now: number, t: Strings): string {
+  if (s.deadline) {
+    const next = !s.lastRequestAt ? t.values.nextFirstTurn
+      : s.compacted ? t.values.nextAfterCompaction
+      : isCold(s, now) ? t.values.nextCold(fmtDuration(s.every))
+      : t.values.nextPing(fmtDuration(s.lastRequestAt + s.every - now))
+    const last = s.last ? t.values.lastPing(fmtTok(s.last.read), fmtUsd(s.last.usd)) : ''
+    return t.values.keepWarmOn(fmtDuration(s.deadline - now), next + last, s.always)
+  }
+  if (s.stopped) return t.values.stopped(s.stopped, s.always)
+  return s.always ? t.values.offAlways(fmtDuration(DEFAULT_WINDOW_MS)) : t.values.off
+}
+
+/** cache-tax's tab in the /mods pane: where the cache stands, the keep-warm window and the guard. */
+export function panelOf(s: State, now: number, lang: Lang): CachetaxPanel {
+  const t = STRINGS[lang]
+  const known = s.lastRequestAt > 0 && !s.compacted
+  const cold = known && isCold(s, now)
+  const cache = s.compacted ? t.summary.compacted
+    : !s.lastRequestAt ? t.summary.none
+    : cold ? t.summary.cold(fmtDuration(now - s.lastRequestAt - TTL_MS))
+    : t.summary.warm(fmtDuration(s.lastRequestAt + TTL_MS - now))
+  const warm = s.deadline ? t.summary.keepWarm(fmtDuration(s.deadline - now)) : s.stopped ? t.summary.stopped(s.stopped) : t.summary.keepWarmOff
   const pings = breakEvenPings(s)
-  if (pings != null) lines.push(`break-even  up to ${pings} pings at the read rate cost one cold write, about ${fmtDuration(pings * s.every)} of idle at one ping per ${fmtDuration(s.every)}`)
-  lines.push(`guard       ${s.guard === 'refuse' ? 'refuse once (/cache-tax guard warn to only show the price)' : 'warn only (/cache-tax guard refuse to be stopped once)'}`)
   const paid = s.misses.reduce((a, m) => a + (m.usd ?? 0), 0)
-  lines.push(`session     ${s.misses.length} cold write${s.misses.length === 1 ? '' : 's'} paid, ${fmtUsd(paid)}`)
-  return lines.join('\n')
+  const status: CachetaxItem[] = [
+    { kind: 'info', label: t.labels.cache, tone: cold ? 'err' : known ? 'ok' : 'muted',
+      value: s.compacted ? t.values.compacted : !s.lastRequestAt ? t.values.none
+        : cold ? t.values.cold(fmtDuration(now - s.lastRequestAt))
+        : t.values.warm(fmtDuration(s.lastRequestAt + TTL_MS - now)) },
+    { kind: 'info', label: t.labels.keepWarm, value: keepWarmValue(s, now, t), tone: s.deadline ? 'ok' : s.stopped ? 'err' : 'muted' },
+    { kind: 'info', label: t.labels.model, value: s.lastModel ?? t.values.modelUnseen },
+    { kind: 'info', label: t.labels.context, value: t.values.tokens(s.ctx.toLocaleString('en-US')) },
+    { kind: 'info', label: t.labels.coldWrite, value: t.values.coldWrite(fmtUsd(coldUsd(s)), fmtUsd(warmUsd(s))) },
+    ...(pings == null ? [] : [{ kind: 'info', label: t.labels.breakEven, value: t.values.breakEven(pings, fmtDuration(pings * s.every), fmtDuration(s.every)) } as const]),
+    { kind: 'info', label: t.labels.guard, value: s.guard === 'refuse' ? t.values.guardRefuse : t.values.guardWarn },
+    { kind: 'info', label: t.labels.session, value: t.values.session(s.misses.length, fmtUsd(paid)), tone: s.misses.length > 0 ? 'warn' : 'muted' },
+  ]
+  const keepWarm: CachetaxItem[] = [
+    { kind: 'choice', id: 'window', label: t.warm.window, help: t.warm.windowHelp, value: '', options: WINDOWS.map(w => ({ value: w, label: w })) },
+    { kind: 'input', id: 'custom', label: t.warm.custom, help: t.warm.customHelp, placeholder: '90m', submitLabel: t.warm.start },
+    { kind: 'toggle', id: 'always', label: t.warm.always, help: t.warm.alwaysHelp(fmtDuration(DEFAULT_WINDOW_MS)), value: s.always },
+    ...(s.deadline || s.always ? [{ kind: 'action', id: 'off', label: t.warm.off, help: t.warm.offHelp } as const] : []),
+    { kind: 'text', text: t.warm.cost, tone: 'muted' },
+  ]
+  const guard: CachetaxItem[] = [
+    { kind: 'choice', id: 'guard', label: t.guard.label, help: t.guard.help, value: s.guard, options: [{ value: 'refuse', label: t.guard.refuse }, { value: 'warn', label: t.guard.warn }] },
+  ]
+  return {
+    title: t.title,
+    summary: `${cache} · ${warm}`,
+    tone: s.stopped ? 'err' : cold ? 'warn' : known ? 'ok' : 'muted',
+    sections: [
+      { id: 'status', title: t.sections.status, items: status },
+      { id: 'warm', title: t.sections.warm, items: keepWarm },
+      { id: 'guard', title: t.sections.guard, items: guard },
+    ],
+    refreshMs: REFRESH_MS,
+  }
+}
+
+/** A press in the tab. `window` and `custom` take a window such as 6h or 90m, and `custom` also `<window> every <period>`, a testing knob that lasts only for that window. */
+async function actOn($: EngineInterface, s: State, args: CachetaxActArgs, lang: Lang): Promise<CachetaxActResult> {
+  const t = STRINGS[lang]
+  const now = await $.clock.now()
+  switch (args.id) {
+    case 'window':
+    case 'custom': {
+      const words = String(args.value ?? '').trim().split(/\s+/).filter(Boolean)
+      const window = parseDuration(words[0] ?? '')
+      if (window == null) return { message: t.messages.badDuration }
+      let every = PING_AFTER_MS
+      if (words[1] === 'every') {
+        const period = parseDuration(words[2] ?? '')
+        if (period == null || period < MIN_PING_MS) return { message: t.messages.badEvery }
+        every = period
+      }
+      await startWindow($, s, window, every)
+      return { message: armedText(s, now, window, t) }
+    }
+    case 'always': {
+      if (args.value === 'off') {
+        s.always = false
+        await $.store.delete(KEY_ALWAYS)
+        updateStatus($, s, now)
+        return { message: t.messages.alwaysOff }
+      }
+      s.always = true
+      await $.store.set(KEY_ALWAYS, true)
+      await startWindow($, s, DEFAULT_WINDOW_MS, PING_AFTER_MS)
+      return { message: t.messages.alwaysOn(fmtDuration(DEFAULT_WINDOW_MS)) + (isCold(s, now) ? t.messages.coldNote(fmtDuration(s.every)) : '') }
+    }
+    case 'off': {
+      const wasAlways = s.always
+      await stop($, s, null, true)
+      return { message: wasAlways ? t.messages.offAlways : t.messages.off }
+    }
+    case 'guard': {
+      if (args.value !== 'warn' && args.value !== 'refuse') return {}
+      s.guard = args.value
+      await $.store.set(KEY_GUARD, s.guard)
+      return { message: s.guard === 'refuse' ? t.messages.guardRefuse : t.messages.guardWarn }
+    }
+    default:
+      return {}
+  }
+}
+
+/** True when skins' usage band already shows the time until the cache goes cold; false without skins. */
+async function skinsShowsCache($: EngineInterface): Promise<boolean> {
+  try {
+    return (await $.skins.band()) === true
+  } catch {
+    return false
+  }
 }
 
 export function freshState(): State {
@@ -297,6 +413,30 @@ export const register: Register = on => {
   const s = freshState()
   let light = false
   let noColor = false
+  // The language the /mods pane last asked for, for what a press answers.
+  let lang: Lang = 'en'
+
+  // Adds `$.cachetax`: its tab in the /mods pane and where the cache stands.
+  on('engine.create', async ($, e, next) => {
+    const built = await next(e)
+    return {
+      ...built,
+      cachetax: {
+        panel: async () => ({ title: '', sections: [] }),
+        act: async () => ({}),
+        state: async () => ({ phase: 'unknown' as const, coldAt: null, warmUntil: null }),
+      },
+    }
+  })
+
+  on('cachetax.panel', async ($, e) => {
+    lang = e.lang === 'pt' ? 'pt' : 'en'
+    return { value: panelOf(s, await $.clock.now(), lang) }
+  })
+
+  on('cachetax.act', async ($, e) => ({ value: await actOn($, s, e, lang) }))
+
+  on('cachetax.state', async $ => ({ value: stateOf(s, await $.clock.now()) }))
 
   on('config.set', { key: 'theme' }, async ($, e, next) => {
     const result = await next(e)
@@ -310,6 +450,8 @@ export const register: Register = on => {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const rest = await next(e)
     if (!s.hasBand || e.props.hasSurvey) return rest
+    // skins draws the countdown in its own band; its line here would say it twice.
+    if (await skinsShowsCache($)) return rest
     const now = await $.clock.now()
     const text = statusText(s, now)
     if (!text || (s.deadline && now >= s.deadline)) return rest
@@ -357,22 +499,10 @@ export const register: Register = on => {
     if (s.always) await startWindow($, s, DEFAULT_WINDOW_MS, PING_AFTER_MS)
     const usage = await $.session.usage()
     if (usage.context.tokens) s.ctx = usage.context.tokens
-    await $.command.register({
-      name: 'keepwarm',
-      description: 'Keep the prompt cache warm: bare for 6h, a window such as 90m, always, off, or status (cache-tax)',
-      argumentHint: '[6h | always | off | status]',
-      immediate: true,
-    })
-    await $.command.register({
-      name: 'cache-tax',
-      description: 'Prompt cache state, cold price and this session\'s cold writes; guard warn|refuse (cache-tax, the Mod)',
-      argumentHint: '[status | guard warn | guard refuse]',
-      immediate: true,
-    })
     // The hook form of cache-tax ships a /cache-tax:status skill; both installed means two guards.
     const commands = await $.command.list()
     if (commands.some(c => c.name === 'cache-tax:status')) {
-      $.ui.log('the hook form (cache-tax@claude-code-hooks) is also installed, so a cold send is warned about or refused twice. Uninstall it, or /cache-tax guard warn here.')
+      $.ui.log('the hook form (cache-tax@claude-code-hooks) is also installed, so a cold send is warned about or refused twice. Uninstall it, or set the guard to warn only in /mods.')
     }
     updateStatus($, s, now)
     return r
@@ -396,53 +526,6 @@ export const register: Register = on => {
     // The seeded clock decides whether a restored or always window pings before the first turn: never when it is cold.
     await arm($, s)
     return r
-  })
-
-  on('command.run', { command: 'keepwarm' }, async ($, e) => {
-    const words = String(e.args ?? '').trim().split(/\s+/).filter(Boolean)
-    const now = await $.clock.now()
-    if (words[0] === 'off') {
-      const wasAlways = s.always
-      await stop($, s, null, true)
-      return { text: wasAlways ? 'keepwarm is off, and no longer arms itself at session start' : 'keepwarm is off' }
-    }
-    if (words[0] === 'always') {
-      s.always = true
-      await $.store.set(KEY_ALWAYS, true)
-      await startWindow($, s, DEFAULT_WINDOW_MS, PING_AFTER_MS)
-      const cold = isCold(s, now) ? `. The cache is cold now, so the first ping comes ${fmtDuration(s.every)} after the next turn` : ''
-      return { text: `keepwarm always on: every session starts with a ${fmtDuration(DEFAULT_WINDOW_MS)} window; /keepwarm off turns it off for good${cold}` }
-    }
-    if (!words.length) {
-      await startWindow($, s, DEFAULT_WINDOW_MS, PING_AFTER_MS)
-      return { text: armedText(s, now, DEFAULT_WINDOW_MS) }
-    }
-    if (words[0] !== 'status') {
-      const window = parseDuration(words[0])
-      if (window == null) return { text: 'keepwarm takes a window such as 6h or 90m, or always, off, or status' }
-      // "every 2m" is a testing knob and lasts only for the window it was given with.
-      let every = PING_AFTER_MS
-      if (words[1] === 'every') {
-        const period = parseDuration(words[2] ?? '')
-        if (period == null || period < MIN_PING_MS) return { text: 'every takes a period of at least 1m' }
-        every = period
-      }
-      await startWindow($, s, window, every)
-      return { text: armedText(s, now, window) }
-    }
-    return { text: statusText(s, now) ?? 'keepwarm is off' }
-  })
-
-  on('command.run', { command: 'cache-tax' }, async ($, e) => {
-    const words = String(e.args ?? '').trim().split(/\s+/).filter(Boolean)
-    const now = await $.clock.now()
-    if (words[0] === 'guard') {
-      if (words[1] !== 'warn' && words[1] !== 'refuse') return { text: '/cache-tax guard takes warn or refuse' }
-      s.guard = words[1]
-      await $.store.set(KEY_GUARD, s.guard)
-      return { text: s.guard === 'refuse' ? 'guard set to refuse once: a cold send is dropped with its price, the resend goes through' : 'guard set to warn: a cold send goes through with its price shown' }
-    }
-    return { text: card(s, now) }
   })
 
   // The message that pays. Only its first character is read.
@@ -497,7 +580,7 @@ export const register: Register = on => {
         s.misses.push({ at: now, tokens: write, usd })
         if (s.deadline < now + AUTO_WARM_MS) {
           await startWindow($, s, AUTO_WARM_MS, s.every)
-          $.ui.log(`cold write of ${fmtTok(write)} tokens paid (${fmtUsd(usd)}). Keeping the cache warm for ${fmtDuration(AUTO_WARM_MS)} so it is not paid again today; /keepwarm off to stop.`)
+          $.ui.log(`cold write of ${fmtTok(write)} tokens paid (${fmtUsd(usd)}). Keeping the cache warm for ${fmtDuration(AUTO_WARM_MS)} so it is not paid again today; turn it off in /mods to stop.`)
         }
       }
     }
