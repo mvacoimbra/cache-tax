@@ -1,4 +1,4 @@
-import type { ElementTable, EngineInterface, Register, RenderElement, RenderSurface } from 'claude-code'
+import type { ElementTable, EngineInterface, Register, RenderElement, RenderSurface, Timer } from 'claude-code'
 import type { CachetaxActArgs, CachetaxActResult, CachetaxCatalogEntry, CachetaxItem, CachetaxPanel, CachetaxState } from '../types'
 import { STRINGS } from './i18n'
 import type { Lang, Strings } from './i18n'
@@ -169,7 +169,8 @@ function disarm(s: State) {
 
 // The window and its ping period belong to the session that armed them, so a
 // second session, or one resumed from another transcript, never inherits them
-// and cannot turn them off. The always switch and the guard mode stay global.
+// and cannot turn them off. The always switch and the guard mode are the user's,
+// shared by every session through the store (syncSettings).
 function deadlineKey(s: State): string {
   return `${KEY_DEADLINE}:${s.sid}`
 }
@@ -272,6 +273,20 @@ async function startWindow($: EngineInterface, s: State, windowMs: number, every
 const WINDOWS = ['1h', '3h', '6h', '12h', '24h']
 
 const REFRESH_MS = 15 * 1000
+
+// How often the user's settings are read back from the store, so a change made in another
+// session reaches this one.
+const SYNC_MS = 3 * 1000
+
+/** Reads the user's settings (the guard and the every-session switch) back from the store, the only place they live; true when either changed since the last read. The keep-warm window is this session's own and is not touched. */
+export async function syncSettings($: EngineInterface, s: State): Promise<boolean> {
+  const guard: GuardMode = (await $.store.get(KEY_GUARD)) === 'warn' ? 'warn' : 'refuse'
+  const always = (await $.store.get(KEY_ALWAYS)) === true
+  if (guard === s.guard && always === s.always) return false
+  s.guard = guard
+  s.always = always
+  return true
+}
 
 /** Where the cache stands, for another mod's countdown (`$.cachetax.state`). */
 export function stateOf(s: State, now: number): CachetaxState {
@@ -458,6 +473,8 @@ export function freshState(): State {
 
 export const register: Register = on => {
   const s = freshState()
+  // The slow clock that picks up settings changed in another session.
+  let sync: Timer | null = null
   let light = false
   let noColor = false
   // The language the /mods pane last asked for, for what a press answers.
@@ -479,6 +496,7 @@ export const register: Register = on => {
 
   on('cachetax.panel', async ($, e) => {
     lang = e.lang === 'pt' ? 'pt' : 'en'
+    await syncSettings($, s)
     return { value: panelOf(s, await $.clock.now(), lang) }
   })
 
@@ -524,11 +542,10 @@ export const register: Register = on => {
     await prune($, s, now)
     const saved = await $.store.get(deadlineKey(s))
     const savedEvery = await $.store.get(everyKey(s))
-    const savedGuard = await $.store.get(KEY_GUARD)
     s.deadline = typeof saved === 'number' && saved > now ? saved : 0
     s.every = typeof savedEvery === 'number' && savedEvery >= MIN_PING_MS ? savedEvery : PING_AFTER_MS
-    s.guard = savedGuard === 'warn' ? 'warn' : 'refuse'
-    s.always = (await $.store.get(KEY_ALWAYS)) === true
+    await syncSettings($, s)
+    sync ??= $.clock.every(SYNC_MS, () => { void syncSettings($, s) })
     // Always means a fresh default window every session, whatever the last one left behind.
     if (s.always) await startWindow($, s, DEFAULT_WINDOW_MS, PING_AFTER_MS)
     const usage = await $.session.usage()
@@ -568,6 +585,8 @@ export const register: Register = on => {
     if (typeof e.text !== 'string' || e.text.trimStart().startsWith('/')) return next(e)
     const now = await $.clock.now()
     if (!isCold(s, now) || s.ctx < BIG_TOKENS) return next(e)
+    // The guard is the user's setting: the one set in any session holds here.
+    await syncSettings($, s)
     if (s.guard === 'warn') {
       $.ui.log(`${guardText(s, now)} Sending anyway; keepwarm will hold the cache for ${fmtDuration(AUTO_WARM_MS)} once it lands.`)
       s.coldWritePending = true

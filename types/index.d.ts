@@ -7,11 +7,15 @@ export type CachetaxPanelArgs = { lang: CachetaxLang; surface: 'terminal' | 'des
 
 export type CachetaxTone = 'ok' | 'warn' | 'err' | 'muted' | 'accent'
 
+// Where a setting lives: the user's (every session and project, the default) or this session's
+// alone, such as the keep-warm window. The hub marks the session's.
+export type CachetaxScope = 'user' | 'session'
+
 export type CachetaxItem =
-  | { kind: 'toggle'; id: string; label: string; help?: string; value: boolean }
-  | { kind: 'choice'; id: string; label: string; help?: string; value: string; options: { value: string; label: string }[] }
-  | { kind: 'action'; id: string; label: string; help?: string; primary?: boolean }
-  | { kind: 'input'; id: string; label: string; help?: string; placeholder?: string; submitLabel?: string }
+  | { kind: 'toggle'; id: string; label: string; help?: string; value: boolean; scope?: CachetaxScope }
+  | { kind: 'choice'; id: string; label: string; help?: string; value: string; options: { value: string; label: string }[]; scope?: CachetaxScope }
+  | { kind: 'action'; id: string; label: string; help?: string; primary?: boolean; scope?: CachetaxScope }
+  | { kind: 'input'; id: string; label: string; help?: string; placeholder?: string; submitLabel?: string; scope?: CachetaxScope }
   | { kind: 'info'; label: string; value: string; tone?: CachetaxTone }
   | { kind: 'text'; text: string; tone?: CachetaxTone }
   | { kind: 'swatch'; id: string; label: string; color: string; selected: boolean }
