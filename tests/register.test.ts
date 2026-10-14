@@ -991,9 +991,14 @@ describe('the /mods tab', () => {
     expect(en.sections.map(section => section.id)).toEqual(['status', 'warm', 'guard'])
     expect(en.refreshMs).toBe(15_000)
     const warmItems = en.sections[1]?.items ?? []
-    expect(warmItems.map(item => ('id' in item ? item.id : item.kind))).toEqual(['window', 'custom', 'off', 'always', 'text'])
+    expect(warmItems.map(item => ('id' in item ? item.id : item.kind))).toEqual(['window', 'custom', 'text', 'always', 'off'])
     // The window and its presses are this session's; the every-session switch and the guard are the user's.
-    expect(warmItems.map(item => ('scope' in item ? item.scope : undefined))).toEqual(['session', 'session', 'session', undefined, undefined])
+    expect(warmItems.map(item => ('scope' in item ? item.scope : undefined))).toEqual(['session', 'session', undefined, undefined, 'session'])
+    // Five windows: the hub draws them as a select, with none chosen.
+    expect(warmItems[0]).toMatchObject({ kind: 'choice', value: '' })
+    expect((warmItems[0] as Extract<CachetaxItem, { kind: 'choice' }>).options).toHaveLength(5)
+    // Stop is named by its title, the button says what it does.
+    expect(warmItems[4]).toMatchObject({ kind: 'action', title: 'Stop keeping warm', label: 'Stop', help: 'Ends the window now, 1h30m early' })
     expect(en.sections[2]?.items.map(item => item.kind)).toEqual(['choice', 'text'])
     expect(en.sections[2]?.items[0]).toMatchObject({ id: 'guard', value: 'refuse' })
     expect(JSON.stringify(en.sections[2])).not.toContain('"scope"')
@@ -1002,6 +1007,7 @@ describe('the /mods tab', () => {
     expect(pt.title).toBe('Manter aquecido')
     expect(pt.summary).toBe('aquecido · mantido por 1h30m')
     expect(JSON.stringify(pt)).not.toContain('Keep warm for')
+    expect(pt.sections[1]?.items.at(-1)).toMatchObject({ kind: 'action', title: 'Parar de aquecer', label: 'Parar' })
   })
 
   test('the state says when the cache goes cold and when the window ends', async ($, on) => {
