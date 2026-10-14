@@ -63,7 +63,7 @@ There are no slash commands: everything is in the Keep warm tab of `/mods`, in E
 | Section | What it holds |
 |---|---|
 | Status | Whether the cache is warm and when it goes cold, the keep-warm window, its next ping and last receipt, the model, the context, the cold-write price, the break-even and this session's cold writes |
-| Keep warm | One press for 1h, 3h, 6h, 12h or 24h; a field for any other window (90m, 2h30m, or `6h every 2m`, a testing knob with a 1m floor that lasts only for that window); Stop, which ends the window early. These three are marked "this session only". Then Keep warm every session, which arms six hours at each session start, and why a stopped loop stopped |
+| Keep warm | A pick of 1h, 3h, 6h, 12h or 24h; a field for any other window (90m, 2h30m, or `6h every 2m`, a testing knob with a 1m floor that lasts only for that window); Keep warm every session, which arms six hours at each session start; Stop keeping warm, last, which ends the window early. The window, the field and Stop are marked "this session only". A stopped loop says why at the top |
 | Cold send guard | Stop a cold send once, the resend goes through (this mod's default), or warn only and send (the hook's default) |
 
 The every-session switch and the guard live in the mod's store, one per user: the tab reads them back before it draws and every 3 seconds, so a change in one session shows in every other. The keep-warm window stays with the session that started it.
