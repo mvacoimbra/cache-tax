@@ -52,6 +52,7 @@ export type Strings = {
     customHelp: string
     start: string
     off: string
+    offTitle: string
     offHelp: (left: string) => string
     always: string
     alwaysHelp: (window: string) => string
@@ -132,6 +133,7 @@ const en: Strings = {
     customHelp: 'Such as 90m or 2h30m',
     start: 'Start',
     off: 'Stop',
+    offTitle: 'Stop keeping warm',
     offHelp: left => `Ends the window now, ${left} early`,
     always: 'Keep warm every session',
     alwaysHelp: window => `Each new session starts with a ${window} window`,
@@ -212,6 +214,7 @@ const pt: Strings = {
     customHelp: 'Como 90m ou 2h30m',
     start: 'Iniciar',
     off: 'Parar',
+    offTitle: 'Parar de aquecer',
     offHelp: left => `Encerra a janela agora, ${left} antes do fim`,
     always: 'Manter aquecido em toda sessão',
     alwaysHelp: window => `Toda sessão nova começa com uma janela de ${window}`,

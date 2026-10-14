@@ -383,9 +383,10 @@ export function panelOf(s: State, now: number, lang: Lang): CachetaxPanel {
     ...(s.stopped && !s.deadline ? [{ kind: 'text', text: t.warm.stoppedBecause(s.stopped), tone: 'err' } as const] : []),
     { kind: 'choice', id: 'window', label: t.warm.window, help: t.warm.windowHelp, value: '', options: WINDOWS.map(w => ({ value: w, label: w })), scope: 'session' },
     { kind: 'input', id: 'custom', label: t.warm.custom, help: t.warm.customHelp, placeholder: '90m', submitLabel: t.warm.start, scope: 'session' },
-    ...(s.deadline ? [{ kind: 'action', id: 'off', label: t.warm.off, help: t.warm.offHelp(left), scope: 'session' } as const] : []),
-    { kind: 'toggle', id: 'always', label: t.warm.always, help: t.warm.alwaysHelp(fmtDuration(DEFAULT_WINDOW_MS)), value: s.always },
     { kind: 'text', text: t.warm.cost + (pings == null ? '' : ' ' + t.warm.breakEven(pings, fmtDuration(pings * s.every), fmtDuration(s.every))), tone: 'muted' },
+    { kind: 'toggle', id: 'always', label: t.warm.always, help: t.warm.alwaysHelp(fmtDuration(DEFAULT_WINDOW_MS)), value: s.always },
+    // The group's one action, last.
+    ...(s.deadline ? [{ kind: 'action', id: 'off', title: t.warm.offTitle, label: t.warm.off, help: t.warm.offHelp(left), scope: 'session' } as const] : []),
   ]
   const guard: CachetaxItem[] = [
     { kind: 'choice', id: 'guard', label: t.guard.label, help: t.guard.help, value: s.guard, options: [{ value: 'refuse', label: t.guard.refuse }, { value: 'warn', label: t.guard.warn }] },
@@ -571,7 +572,7 @@ export function catalogOf(ui: ElementTable, surface: RenderSurface, lang: Lang, 
     entry('status-line', 'Status line text', 'Texto da linha de status', 'On a surface without the band, the same words in the status line', 'Numa superfície sem a faixa, as mesmas palavras na linha de status',
       line('keepwarm 5h12m left · ping in 38m · last ping read 157k $0.05')),
     entry('guard-refusal', 'Cold send held', 'Envio a frio segurado', 'Above the prompt while the guard holds a cold send (guard: stop once), until it is sent again or dismissed', 'Acima do prompt enquanto a proteção segura um envio a frio (segurar uma vez), até reenviar ou dispensar',
-      staticTree(heldNotice(k, SAMPLE_HELD, () => {}))),
+      staticTree(heldNotice(k, SAMPLE_HELD, () => {}), t) as RenderElement),
     entry('guard-reason', 'Cold send held: the refusal', 'Envio a frio segurado: a recusa', 'The reason Claude Code shows for the dropped message', 'O motivo que o Claude Code mostra para a mensagem descartada',
       line(refusalText(SAMPLE_HELD))),
     entry('guard-warning', 'Cold send warned', 'Envio a frio avisado', 'The same price, logged while the send goes through (guard: warn only)', 'O mesmo preço, registrado enquanto o envio passa (proteção: só avisar)',
