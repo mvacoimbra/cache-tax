@@ -3,6 +3,10 @@ import type { CachetaxActArgs, CachetaxActResult, CachetaxCatalogEntry, Cachetax
 import { STRINGS } from './i18n'
 import type { Lang, Strings } from './i18n'
 import { statusIcons } from './status-icons'
+import { action, icon, kitOf, notice, status, text } from './kit/kit'
+import type { Kit, KitUi } from './kit/kit'
+import { NATIVE, NATIVE_NAME, toneOf } from './kit/tone'
+import type { KitSkin, KitTone, Tone } from './kit/tone'
 
 const TTL_MS = 60 * 60 * 1000
 const PING_AFTER_MS = 50 * 60 * 1000
@@ -32,6 +36,9 @@ type PingRecord = { at: number; read: number; write: number; usd: number | null;
 type Miss = { at: number; tokens: number; usd: number | null }
 type GuardMode = 'refuse' | 'warn'
 
+/** A held cold send's figures, as the refusal states them, already formatted. */
+export type Held = { since: string; tokens: string; rate: string; usd: string; warmUsd: string | null; autoWarm: string }
+
 export type State = {
   hasBand: boolean
   sid: string
@@ -49,6 +56,8 @@ export type State = {
   pending: { cancel: () => void } | null
   last: PingRecord | null
   stopped: string | null
+  // The cold send the guard just held, priced, for the notice above the prompt.
+  held: Held | null
 }
 
 function priceOf(model: string | null): [number, number, number] | null {
@@ -105,13 +114,40 @@ function isCold(s: State, now: number): boolean {
   return s.lastRequestAt > 0 && !s.compacted && now - s.lastRequestAt >= TTL_MS
 }
 
-function guardText(s: State, now: number): string {
+/** The figures of a cold send now: how long cold, how much is re-written, at what rate and price. */
+function heldOf(s: State, now: number): Held {
   const price = priceOf(s.lastModel)
-  const rate = price ? `$${price[1]}/MTok` : 'the cache-write rate'
   const warm = warmUsd(s)
-  return `the prompt cache went cold ${fmtDuration(now - s.lastRequestAt - TTL_MS)} ago. Sending this re-writes ` +
-    `up to ${s.ctx.toLocaleString('en-US')} tokens at ${rate} = ${fmtUsd(coldUsd(s))}` +
-    (warm == null ? '' : ` (a warm turn would have cost ${fmtUsd(warm)})`) + '.'
+  return {
+    since: fmtDuration(now - s.lastRequestAt - TTL_MS),
+    tokens: s.ctx.toLocaleString('en-US'),
+    rate: price ? `$${price[1]}/MTok` : 'the cache-write rate',
+    usd: fmtUsd(coldUsd(s)),
+    warmUsd: warm == null ? null : fmtUsd(warm),
+    autoWarm: fmtDuration(AUTO_WARM_MS),
+  }
+}
+
+function guardText(h: Held): string {
+  return `the prompt cache went cold ${h.since} ago. Sending this re-writes up to ${h.tokens} tokens at ${h.rate} = ${h.usd}` +
+    (h.warmUsd == null ? '' : ` (a warm turn would have cost ${h.warmUsd})`) + '.'
+}
+
+/** The log line after a cold write, as keep warm arms itself. */
+function paidText(tokens: string, usd: string): string {
+  return `cold write of ${tokens} tokens paid (${usd}). Keeping the cache warm for ${fmtDuration(AUTO_WARM_MS)} so it is not paid again today; stop it in /mods.`
+}
+
+const TWICE_TEXT = 'the hook form (cache-tax@claude-code-hooks) is also installed, so a cold send is warned about or refused twice. Uninstall it, or set the guard to warn only in /mods.'
+
+/** What the guard answers when it drops a cold send: the engine shows it as the reason. */
+function refusalText(h: Held): string {
+  return `cache-tax: ${guardText(h)} Send it again to pay it, and keepwarm will then hold the cache for ${h.autoWarm}. Or /clear and start from a note.`
+}
+
+/** The log line of a cold send that goes through under the warn-only guard. */
+function warningText(h: Held): string {
+  return `${guardText(h)} Sending anyway; keepwarm will hold the cache for ${h.autoWarm} once it lands.`
 }
 
 export type ResumeFields = {
@@ -131,6 +167,7 @@ export function resetForClear(s: State) {
   s.ackedAt = 0
   s.coldWritePending = false
   s.misses = []
+  s.held = null
   disarm(s)
 }
 
@@ -190,18 +227,21 @@ async function prune($: EngineInterface, s: State, now: number) {
   }
 }
 
-async function stop($: EngineInterface, s: State, why: string | null, forgetAlways = false) {
+async function stop($: EngineInterface, s: State, why: string | null) {
   s.deadline = 0
   s.every = PING_AFTER_MS
   s.stopped = why
   disarm(s)
   await $.store.delete(deadlineKey(s))
   await $.store.delete(everyKey(s))
-  if (forgetAlways) {
-    s.always = false
-    await $.store.delete(KEY_ALWAYS)
-  }
   updateStatus($, s, await $.clock.now())
+}
+
+/** Takes down the notice of a held send: it was resent, dismissed, or the turn moved on. */
+function release($: EngineInterface, s: State) {
+  if (!s.held) return
+  s.held = null
+  if (s.hasBand) $.ui.invalidate('ui.render')
 }
 
 async function arm($: EngineInterface, s: State) {
@@ -300,61 +340,64 @@ export function stateOf(s: State, now: number): CachetaxState {
   }
 }
 
-function keepWarmValue(s: State, now: number, t: Strings): string {
-  if (s.deadline) {
-    const next = !s.lastRequestAt ? t.values.nextFirstTurn
-      : s.compacted ? t.values.nextAfterCompaction
-      : isCold(s, now) ? t.values.nextCold(fmtDuration(s.every))
-      : t.values.nextPing(fmtDuration(s.lastRequestAt + s.every - now))
-    const last = s.last ? t.values.lastPing(fmtTok(s.last.read), fmtUsd(s.last.usd)) : ''
-    return t.values.keepWarmOn(fmtDuration(s.deadline - now), next + last, s.always)
-  }
-  if (s.stopped) return t.values.stopped(s.stopped, s.always)
-  return s.always ? t.values.offAlways(fmtDuration(DEFAULT_WINDOW_MS)) : t.values.off
-}
-
-/** cache-tax's tab in the /mods pane: where the cache stands, the keep-warm window and the guard. */
+/** cache-tax's tab in the /mods pane: where the cache stands, then the keep-warm window, then the guard. The window and its presses are this session's (`scope: 'session'`); the every-session switch and the guard are the user's. */
 export function panelOf(s: State, now: number, lang: Lang): CachetaxPanel {
   const t = STRINGS[lang]
   const known = s.lastRequestAt > 0 && !s.compacted
   const cold = known && isCold(s, now)
+  const left = fmtDuration(s.deadline - now)
   const cache = s.compacted ? t.summary.compacted
     : !s.lastRequestAt ? t.summary.none
     : cold ? t.summary.cold(fmtDuration(now - s.lastRequestAt - TTL_MS))
+    : s.deadline ? t.summary.kept(left)
     : t.summary.warm(fmtDuration(s.lastRequestAt + TTL_MS - now))
-  const warm = s.deadline ? t.summary.keepWarm(fmtDuration(s.deadline - now)) : s.stopped ? t.summary.stopped(s.stopped) : t.summary.keepWarmOff
+  const summary = s.stopped ? `${cache} · ${t.summary.stopped}`
+    : s.deadline && !(known && !cold) ? `${cache} · ${t.summary.keepWarm(left)}`
+    : cache
   const pings = breakEvenPings(s)
   const paid = s.misses.reduce((a, m) => a + (m.usd ?? 0), 0)
+  const next = !s.deadline ? null
+    : !s.lastRequestAt ? t.values.nextFirstTurn
+    : s.compacted ? t.values.nextAfterCompaction
+    : cold ? t.values.nextCold(fmtDuration(s.every))
+    : t.values.nextPing(fmtDuration(s.lastRequestAt + s.every - now))
+  const keepWarm = s.deadline ? t.values.keepWarmOn(left, s.always)
+    : s.stopped ? t.values.stopped(s.always)
+    : s.always ? t.values.offAlways(fmtDuration(DEFAULT_WINDOW_MS))
+    : t.values.off
   const status: CachetaxItem[] = [
     { kind: 'info', label: t.labels.cache, tone: cold ? 'err' : known ? 'ok' : 'muted',
       value: s.compacted ? t.values.compacted : !s.lastRequestAt ? t.values.none
         : cold ? t.values.cold(fmtDuration(now - s.lastRequestAt))
         : t.values.warm(fmtDuration(s.lastRequestAt + TTL_MS - now)) },
-    { kind: 'info', label: t.labels.keepWarm, value: keepWarmValue(s, now, t), tone: s.deadline ? 'ok' : s.stopped ? 'err' : 'muted' },
+    { kind: 'info', label: t.labels.keepWarm, value: keepWarm, tone: s.deadline ? 'ok' : s.stopped ? 'err' : 'muted' },
+    ...(next === null ? [] : [{ kind: 'info', label: t.labels.nextPing, value: next } as const]),
+    ...(s.last ? [{ kind: 'info', label: t.labels.lastPing, value: t.values.lastPing(fmtTok(s.last.read), fmtUsd(s.last.usd)) } as const] : []),
     { kind: 'info', label: t.labels.model, value: s.lastModel ?? t.values.modelUnseen },
     { kind: 'info', label: t.labels.context, value: t.values.tokens(s.ctx.toLocaleString('en-US')) },
     { kind: 'info', label: t.labels.coldWrite, value: t.values.coldWrite(fmtUsd(coldUsd(s)), fmtUsd(warmUsd(s))) },
-    ...(pings == null ? [] : [{ kind: 'info', label: t.labels.breakEven, value: t.values.breakEven(pings, fmtDuration(pings * s.every), fmtDuration(s.every)) } as const]),
-    { kind: 'info', label: t.labels.guard, value: s.guard === 'refuse' ? t.values.guardRefuse : t.values.guardWarn },
+    ...(pings == null ? [] : [{ kind: 'info', label: t.labels.breakEven, value: t.values.breakEven(pings, fmtDuration(pings * s.every)) } as const]),
     { kind: 'info', label: t.labels.session, value: t.values.session(s.misses.length, fmtUsd(paid)), tone: s.misses.length > 0 ? 'warn' : 'muted' },
   ]
-  const keepWarm: CachetaxItem[] = [
-    { kind: 'choice', id: 'window', label: t.warm.window, help: t.warm.windowHelp, value: '', options: WINDOWS.map(w => ({ value: w, label: w })) },
-    { kind: 'input', id: 'custom', label: t.warm.custom, help: t.warm.customHelp, placeholder: '90m', submitLabel: t.warm.start },
+  const warm: CachetaxItem[] = [
+    ...(s.stopped && !s.deadline ? [{ kind: 'text', text: t.warm.stoppedBecause(s.stopped), tone: 'err' } as const] : []),
+    { kind: 'choice', id: 'window', label: t.warm.window, help: t.warm.windowHelp, value: '', options: WINDOWS.map(w => ({ value: w, label: w })), scope: 'session' },
+    { kind: 'input', id: 'custom', label: t.warm.custom, help: t.warm.customHelp, placeholder: '90m', submitLabel: t.warm.start, scope: 'session' },
+    ...(s.deadline ? [{ kind: 'action', id: 'off', label: t.warm.off, help: t.warm.offHelp(left), scope: 'session' } as const] : []),
     { kind: 'toggle', id: 'always', label: t.warm.always, help: t.warm.alwaysHelp(fmtDuration(DEFAULT_WINDOW_MS)), value: s.always },
-    ...(s.deadline || s.always ? [{ kind: 'action', id: 'off', label: t.warm.off, help: t.warm.offHelp } as const] : []),
-    { kind: 'text', text: t.warm.cost, tone: 'muted' },
+    { kind: 'text', text: t.warm.cost + (pings == null ? '' : ' ' + t.warm.breakEven(pings, fmtDuration(pings * s.every), fmtDuration(s.every))), tone: 'muted' },
   ]
   const guard: CachetaxItem[] = [
     { kind: 'choice', id: 'guard', label: t.guard.label, help: t.guard.help, value: s.guard, options: [{ value: 'refuse', label: t.guard.refuse }, { value: 'warn', label: t.guard.warn }] },
+    { kind: 'text', text: s.guard === 'refuse' ? t.guard.refuseNow : t.guard.warnNow, tone: 'muted' },
   ]
   return {
     title: t.title,
-    summary: `${cache} · ${warm}`,
-    tone: s.stopped ? 'err' : cold ? 'warn' : known ? 'ok' : 'muted',
+    summary,
+    tone: s.stopped || cold ? 'err' : known ? 'ok' : 'muted',
     sections: [
       { id: 'status', title: t.sections.status, items: status },
-      { id: 'warm', title: t.sections.warm, items: keepWarm },
+      { id: 'warm', title: t.sections.warm, items: warm },
       { id: 'guard', title: t.sections.guard, items: guard },
     ],
     refreshMs: REFRESH_MS,
@@ -393,14 +436,15 @@ async function actOn($: EngineInterface, s: State, args: CachetaxActArgs, lang: 
       return { message: t.messages.alwaysOn(fmtDuration(DEFAULT_WINDOW_MS)) + (isCold(s, now) ? t.messages.coldNote(fmtDuration(s.every)) : '') }
     }
     case 'off': {
-      const wasAlways = s.always
-      await stop($, s, null, true)
-      return { message: wasAlways ? t.messages.offAlways : t.messages.off }
+      // This session's window only; the every-session switch is the user's and has its own toggle.
+      await stop($, s, null)
+      return { message: s.always ? t.messages.offAlways(fmtDuration(DEFAULT_WINDOW_MS)) : t.messages.off }
     }
     case 'guard': {
       if (args.value !== 'warn' && args.value !== 'refuse') return {}
       s.guard = args.value
       await $.store.set(KEY_GUARD, s.guard)
+      if (s.guard === 'warn') release($, s)
       return { message: s.guard === 'refuse' ? t.messages.guardRefuse : t.messages.guardWarn }
     }
     default:
@@ -417,57 +461,141 @@ async function skinsShowsCache($: EngineInterface): Promise<boolean> {
   }
 }
 
-type BandState = 'warm' | 'cold' | 'stopped' | 'unknown'
+/** The skin every mod of the pack wears, from skins; null without skins: Claude Code's own colours. */
+async function skinOf($: EngineInterface): Promise<KitSkin | null> {
+  try {
+    return await $.skins.palette()
+  } catch {
+    return null
+  }
+}
 
-/** The row above the prompt: the cube in the state's colour, `cache-tax · <state> · <text>`. */
-export function bandRow(ui: ElementTable, surface: RenderSurface, state: BandState, text: string, light: boolean, noColor: boolean): RenderElement {
+/** Claude Code's own colours in its light theme, for a light theme without skins. */
+const NATIVE_LIGHT: KitSkin = { name: NATIVE_NAME, palette: NATIVE.light, isLight: true }
+
+/** The tone to draw in: the skin's, else Claude Code's own for the theme in use. */
+async function toneFor($: EngineInterface, light: boolean): Promise<Tone> {
+  return toneOf((await skinOf($)) ?? (light ? NATIVE_LIGHT : null))
+}
+
+/** Time left to the minute, as skins' band writes it: `3d4h`, `1h05`, `12m`, `now`. */
+export function countdownOf(ms: number): string {
+  const minutes = Math.ceil(ms / 60000)
+  if (minutes <= 0) return 'now'
+  const days = Math.floor(minutes / 1440)
+  const hours = Math.floor((minutes % 1440) / 60)
+  const rest = minutes % 60
+  if (days > 0) return `${days}d${hours}h`
+  return hours > 0 ? `${hours}h${String(rest).padStart(2, '0')}` : `${rest}m`
+}
+
+export type BandState = 'warm' | 'cold' | 'stopped' | 'unknown'
+
+// The state as the band's status says it: a short word in its colour, as skins' cache line
+// colours warm (ok) and cold (err). A stopped loop is an error too; nothing cached yet is grey.
+const BAND_WORD: Readonly<Record<BandState, string>> = { warm: 'warm', cold: 'cold', stopped: 'stopped', unknown: 'waiting' }
+const BAND_TONE: Readonly<Record<BandState, KitTone>> = { warm: 'ok', cold: 'err', stopped: 'err', unknown: 'muted' }
+
+function bandStateOf(s: State, now: number): BandState {
+  return s.stopped ? 'stopped' : !s.lastRequestAt || s.compacted ? 'unknown' : isCold(s, now) ? 'cold' : 'warm'
+}
+
+/** What the band row says after the state word, in skins' wording: `kept warm 5h12 · ping in 38m`; undefined while keep warm is off. */
+export function bandText(s: State, now: number): string | undefined {
+  if (s.stopped) return `keep warm stopped: ${s.stopped}`
+  if (!s.deadline) return undefined
+  const left = countdownOf(s.deadline - now)
+  if (!s.lastRequestAt) return `keep warm ${left} left · waiting for the first turn`
+  if (s.compacted) return `keep warm ${left} left · waiting for the first turn after compaction`
+  if (isCold(s, now)) return `keep warm ${left} left · first ping ${countdownOf(s.every)} after the next turn`
+  const last = s.last ? ` · last ping read ${fmtTok(s.last.read)} ${fmtUsd(s.last.usd)}` : ''
+  return `kept warm ${left} · ping in ${countdownOf(s.lastRequestAt + s.every - now)}${last}`
+}
+
+/** The row above the prompt: the cache icon, `Cache`, the state as a dot and a word, and the countdown. The terminal keeps the cube image where it can draw one; with NO_COLOR, a bold `[>]` and no colour. */
+export function bandRow(ui: ElementTable, surface: RenderSurface, t: Tone, state: BandState, detail: string, noColor: boolean): RenderElement {
   const { Box, Text } = ui
-  const color = noColor ? undefined : state === 'warm' ? 'success' : state === 'cold' ? (light ? '#c15f3c' : '#d97757') : undefined
-  const asset = statusIcons[light ? 'light' : 'dark'][state === 'warm' || state === 'cold' ? state : 'neutral']
-  const icon = noColor ? Text({ bold: true, children: ['[>]'] })
-    : surface === 'terminal' && 'Image' in ui ? ui.Image({ source: { png: asset.png }, columns: 3, rows: 1, alt: '[>]' })
-    : surface === 'desktop' && 'Svg' in ui ? ui.Svg({ source: asset.svg, width: 18, height: 18, alt: 'Cache Tax' })
-    : Text({ color, bold: true, children: ['[>]'] })
-  return Box({ flexDirection: 'row', alignItems: 'center', children: [
-    Box({ flexShrink: 0, children: [icon] }),
-    Text({ children: [
-      ' cache-tax · ',
-      Text({ color, bold: true, children: [state] }),
-      ` · ${text}`,
-    ] }),
+  const word = BAND_WORD[state]
+  if (noColor) {
+    return Box({ key: 'cachetax-band', flexDirection: 'row', alignItems: 'center', columnGap: 1, children: [
+      Text({ bold: true, children: ['[>]'] }),
+      Text({ children: ['Cache'] }),
+      Text({ bold: true, children: [word] }),
+      Text({ children: [detail] }),
+    ] })
+  }
+  const k = kitOf(ui as KitUi, t, surface, 80)
+  const asset = statusIcons[t.isLight ? 'light' : 'dark'][state === 'warm' || state === 'cold' ? state : 'neutral']
+  const mark = surface === 'terminal' && 'Image' in ui
+    ? ui.Image({ source: { png: asset.png }, columns: 3, rows: 1, alt: '[>]' })
+    : icon(k, 'cache', 'muted', 16, '[>]')
+  return Box({ key: 'cachetax-band', flexDirection: 'row', alignItems: 'center', columnGap: 2, children: [
+    Box({ flexDirection: 'row', alignItems: 'center', columnGap: 1, flexShrink: 0, children: [mark, text(k, 'Cache'), status(k, word, BAND_TONE[state])] }),
+    Box({ flexShrink: 1, flexGrow: 1, children: [text(k, detail, 'muted')] }),
   ] })
 }
 
-/** Every component cache-tax draws, named, for the Components tab of /mods. */
-export function catalogOf(ui: ElementTable, surface: RenderSurface, lang: Lang): CachetaxCatalogEntry[] {
-  const { Text } = ui
+/** The notice above the prompt while the guard holds a cold send: the price, and how to pay it or leave it. */
+export function heldNotice(k: Kit, h: Held, dismiss: () => void): RenderElement {
+  return notice(k, 'cachetax-held', 'warn', `Cold send held · ${h.usd}`, [
+    text(k, `The prompt cache went cold ${h.since} ago. Sending this re-writes up to ${h.tokens} tokens at ${h.rate} = ${h.usd}` +
+      (h.warmUsd == null ? '.' : ` (a warm turn would have cost ${h.warmUsd}).`), 'muted', { key: 'facts' }),
+    text(k, `Send it again to pay it, and keep warm will then hold the cache for ${h.autoWarm}. Or /clear and start from a note.`, 'faint', { key: 'way' }),
+  ], [action(k, 'cachetax-held-dismiss', 'Dismiss', dismiss, { dismiss: true })])
+}
+
+/** A tree another mod can draw: plain data, every handler left out, so a sample's Button shows and presses nothing. */
+export function staticTree<T>(node: T): T {
+  if (Array.isArray(node)) return node.map(staticTree) as T
+  if (node === null || typeof node !== 'object') return node
+  return Object.fromEntries(Object.entries(node).filter(([, value]) => typeof value !== 'function').map(([key, value]) => [key, staticTree(value)])) as T
+}
+
+// The figures the catalog draws its samples with.
+const SAMPLE_HELD: Held = { since: '2h00m', tokens: '200,502', rate: '$20/MTok', usd: '$4.01', warmUsd: '$0.05', autoWarm: '3h00m' }
+
+/** Every component cache-tax draws, named, for the Components tab of /mods. Log lines are drawn as the transcript shows them: one muted line. */
+export function catalogOf(ui: ElementTable, surface: RenderSurface, lang: Lang, t: Tone): CachetaxCatalogEntry[] {
+  const k = kitOf(ui as KitUi, t, surface, 80)
   const pt = lang === 'pt'
   const entry = (id: string, en: string, ptName: string, helpEn: string, helpPt: string, tree: RenderElement): CachetaxCatalogEntry =>
     ({ id, name: pt ? ptName : en, help: pt ? helpPt : helpEn, tree })
-  const warm = 'keepwarm 5h12m left · ping in 38m · last ping read 157k $0.05'
+  const line = (words: string) => text(k, words, 'muted', { wrap: 'wrap' })
+  const warm = 'kept warm 5h12 · ping in 38m · last ping read 157k $0.05'
   return [
-    entry('band-warm', 'Band row: warm', 'Linha da faixa: aquecido', 'Above the prompt while keep warm runs and the cache is warm', 'Acima do prompt com o aquecimento ligado e o cache aquecido', bandRow(ui, surface, 'warm', warm, false, false)),
-    entry('band-cold', 'Band row: cold', 'Linha da faixa: frio', 'The cache went cold: the first ping waits for the next turn', 'O cache esfriou: o primeiro ping espera o próximo turno', bandRow(ui, surface, 'cold', 'keepwarm 4h59m left · cold now, first ping 50m after the next turn', false, false)),
-    entry('band-unknown', 'Band row: before the first turn', 'Linha da faixa: antes do primeiro turno', 'Grey cube: nothing cached yet, or reset by compaction', 'Cubo cinza: nada em cache ainda, ou zerado pela compactação', bandRow(ui, surface, 'unknown', 'keepwarm 6h00m left · waiting for the first turn', false, false)),
-    entry('band-stopped', 'Band row: stopped', 'Linha da faixa: parado', 'The loop stopped, with its reason', 'O ciclo parou, com o motivo', bandRow(ui, surface, 'stopped', 'keepwarm stopped: the ping read 0 and wrote 157k tokens ($3.14), the cache was already gone', false, false)),
-    entry('band-light', 'Band row: light theme', 'Linha da faixa: tema claro', "The cube's light-theme colours", 'As cores do cubo no tema claro', bandRow(ui, surface, 'cold', 'keepwarm 2h10m left · cold now, first ping 50m after the next turn', true, false)),
-    entry('band-no-color', 'Band row: NO_COLOR', 'Linha da faixa: NO_COLOR', 'With NO_COLOR set: a bold [>] and no colour', 'Com NO_COLOR: um [>] em negrito e sem cor', bandRow(ui, surface, 'warm', warm, false, true)),
-    entry('status-line', 'Status line text', 'Texto da linha de status', 'On a surface without the band, the same words in the status line', 'Numa superfície sem a faixa, as mesmas palavras na linha de status', Text({ dimColor: true, children: [warm] })),
-    entry('guard-refusal', 'Cold send held once', 'Envio a frio segurado', 'The guard dropping a cold send once, with its price (guard: stop once)', 'A proteção segurando um envio a frio uma vez, com o preço (proteção: segurar uma vez)',
-      Text({ color: 'warning', children: ['cache-tax: the prompt cache went cold 2h00m ago. Sending this re-writes up to 200,502 tokens at $20/MTok = $4.01 (a warm turn would have cost $0.05). Send it again to pay it, and keepwarm will then hold the cache for 3h00m. Or /clear and start from a note.'] })),
+    entry('band-warm', 'Band row: warm', 'Linha da faixa: aquecido', 'Above the prompt while keep warm runs and the cache is warm', 'Acima do prompt com o aquecimento ligado e o cache aquecido',
+      bandRow(ui, surface, t, 'warm', warm, false)),
+    entry('band-cold', 'Band row: cold', 'Linha da faixa: frio', 'The cache went cold: the first ping waits for the next turn', 'O cache esfriou: o primeiro ping espera o próximo turno',
+      bandRow(ui, surface, t, 'cold', 'keep warm 4h59 left · first ping 50m after the next turn', false)),
+    entry('band-unknown', 'Band row: before the first turn', 'Linha da faixa: antes do primeiro turno', 'Grey: nothing cached yet, or reset by compaction', 'Cinza: nada em cache ainda, ou zerado pela compactação',
+      bandRow(ui, surface, t, 'unknown', 'keep warm 6h00 left · waiting for the first turn', false)),
+    entry('band-stopped', 'Band row: stopped', 'Linha da faixa: parado', 'The loop stopped, with its reason', 'O ciclo parou, com o motivo',
+      bandRow(ui, surface, t, 'stopped', 'keep warm stopped: the ping read 0 and wrote 157k tokens ($3.14), the cache was already gone', false)),
+    entry('band-light', 'Band row: light theme', 'Linha da faixa: tema claro', "Claude Code's light-theme colours, without skins", 'As cores do tema claro do Claude Code, sem skins',
+      bandRow(ui, surface, toneOf(NATIVE_LIGHT), 'cold', 'keep warm 2h10 left · first ping 50m after the next turn', false)),
+    entry('band-no-color', 'Band row: NO_COLOR', 'Linha da faixa: NO_COLOR', 'With NO_COLOR set: a bold [>] and no colour', 'Com NO_COLOR: um [>] em negrito e sem cor',
+      bandRow(ui, surface, t, 'warm', warm, true)),
+    entry('status-line', 'Status line text', 'Texto da linha de status', 'On a surface without the band, the same words in the status line', 'Numa superfície sem a faixa, as mesmas palavras na linha de status',
+      line('keepwarm 5h12m left · ping in 38m · last ping read 157k $0.05')),
+    entry('guard-refusal', 'Cold send held', 'Envio a frio segurado', 'Above the prompt while the guard holds a cold send (guard: stop once), until it is sent again or dismissed', 'Acima do prompt enquanto a proteção segura um envio a frio (segurar uma vez), até reenviar ou dispensar',
+      staticTree(heldNotice(k, SAMPLE_HELD, () => {}))),
+    entry('guard-reason', 'Cold send held: the refusal', 'Envio a frio segurado: a recusa', 'The reason Claude Code shows for the dropped message', 'O motivo que o Claude Code mostra para a mensagem descartada',
+      line(refusalText(SAMPLE_HELD))),
     entry('guard-warning', 'Cold send warned', 'Envio a frio avisado', 'The same price, logged while the send goes through (guard: warn only)', 'O mesmo preço, registrado enquanto o envio passa (proteção: só avisar)',
-      Text({ dimColor: true, children: ['the prompt cache went cold 2h00m ago. Sending this re-writes up to 200,502 tokens at $20/MTok = $4.01 (a warm turn would have cost $0.05). Sending anyway; keepwarm will hold the cache for 3h00m once it lands.'] })),
+      line(warningText(SAMPLE_HELD))),
     entry('cold-write-paid', 'Cold write paid', 'Escrita a frio paga', 'Logged after a cold write, as keep warm arms itself for three hours', 'Registrado depois de uma escrita a frio, quando o aquecimento liga sozinho por três horas',
-      Text({ dimColor: true, children: ['cold write of 157k tokens paid ($3.14). Keeping the cache warm for 3h00m so it is not paid again today; turn it off in /mods to stop.'] })),
+      line(paidText('157k', '$3.14'))),
     entry('resume-cold', 'Resuming cold', 'Retomando a frio', 'Logged when a resumed session starts with a cold cache', 'Registrado quando uma sessão retomada começa com o cache frio',
-      Text({ dimColor: true, children: ['resuming cold. The first message re-writes 200,502 tokens, about $4.01. /clear and paste a summary if you only need the conclusions.'] })),
+      line('resuming cold. The first message re-writes 200,502 tokens, about $4.01. /clear and paste a summary if you only need the conclusions.')),
+    entry('hook-twice', 'Two guards installed', 'Duas proteções instaladas', 'Logged once at session start when the hook form is installed too', 'Registrado uma vez no início da sessão quando a versão em hook também está instalada',
+      line(TWICE_TEXT)),
   ]
 }
 
 export function freshState(): State {
   return {
     hasBand: false, sid: '', deadline: 0, every: PING_AFTER_MS, always: false, lastRequestAt: 0, lastModel: null, ctx: 0, compacted: false,
-    guard: 'refuse', ackedAt: 0, coldWritePending: false, misses: [], pending: null, last: null, stopped: null,
+    guard: 'refuse', ackedAt: 0, coldWritePending: false, misses: [], pending: null, last: null, stopped: null, held: null,
   }
 }
 
@@ -504,7 +632,9 @@ export const register: Register = on => {
 
   on('cachetax.state', async $ => ({ value: stateOf(s, await $.clock.now()) }))
 
-  on('cachetax.catalog', async ($, e) => ({ value: catalogOf($.ui.resolve({ surface: e.surface, component: 'AbovePrompt' }), e.surface, e.lang === 'pt' ? 'pt' : 'en') }))
+  on('cachetax.catalog', async ($, e) => ({
+    value: catalogOf($.ui.resolve({ surface: e.surface, component: 'AbovePrompt' }), e.surface, e.lang === 'pt' ? 'pt' : 'en', await toneFor($, light)),
+  }))
 
   on('config.set', { key: 'theme' }, async ($, e, next) => {
     const result = await next(e)
@@ -518,14 +648,19 @@ export const register: Register = on => {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const rest = await next(e)
     if (!s.hasBand || e.props.hasSurvey) return rest
-    // skins draws the countdown in its own band; its line here would say it twice.
-    if (await skinsShowsCache($)) return rest
     const now = await $.clock.now()
-    const text = statusText(s, now)
-    if (!text || (s.deadline && now >= s.deadline)) return rest
-    const state = s.stopped ? 'stopped' : !s.lastRequestAt || s.compacted ? 'unknown' : isCold(s, now) ? 'cold' : 'warm'
-    const { Box } = $.ui.resolve(e)
-    return Box({ flexDirection: 'column', children: [rest, bandRow($.ui.resolve(e), e.surface, state, text, light, noColor)] })
+    const held = s.held !== null && isCold(s, now) ? s.held : null
+    const detail = bandText(s, now)
+    // skins draws the countdown in its own band; its line here would say it twice.
+    const row = detail !== undefined && !(s.deadline && now >= s.deadline) && !(await skinsShowsCache($))
+    if (!row && !held) return rest
+    const ui = $.ui.resolve(e)
+    const t = await toneFor($, light)
+    return ui.Box({ flexDirection: 'column', rowGap: 0, children: [
+      rest,
+      row ? bandRow(ui, e.surface, t, bandStateOf(s, now), detail, noColor) : null,
+      held ? heldNotice(kitOf(ui as KitUi, t, e.surface, e.props.bodyColumns), held, () => release($, s)) : null,
+    ] })
   })
 
   on('session.start', async ($, e, next) => {
@@ -553,7 +688,7 @@ export const register: Register = on => {
     // The hook form of cache-tax ships a /cache-tax:status skill; both installed means two guards.
     const commands = await $.command.list()
     if (commands.some(c => c.name === 'cache-tax:status')) {
-      $.ui.log('the hook form (cache-tax@claude-code-hooks) is also installed, so a cold send is warned about or refused twice. Uninstall it, or set the guard to warn only in /mods.')
+      $.ui.log(TWICE_TEXT)
     }
     updateStatus($, s, now)
     return r
@@ -587,18 +722,22 @@ export const register: Register = on => {
     if (!isCold(s, now) || s.ctx < BIG_TOKENS) return next(e)
     // The guard is the user's setting: the one set in any session holds here.
     await syncSettings($, s)
+    const held = heldOf(s, now)
     if (s.guard === 'warn') {
-      $.ui.log(`${guardText(s, now)} Sending anyway; keepwarm will hold the cache for ${fmtDuration(AUTO_WARM_MS)} once it lands.`)
+      $.ui.log(warningText(held))
       s.coldWritePending = true
       return next(e)
     }
     if (s.ackedAt === s.lastRequestAt) {
       s.ackedAt = 0
       s.coldWritePending = true
+      release($, s)
       return next(e)
     }
     s.ackedAt = s.lastRequestAt
-    return { drop: `cache-tax: ${guardText(s, now)} Send it again to pay it, and keepwarm will then hold the cache for ${fmtDuration(AUTO_WARM_MS)}. Or /clear and start from a note.` }
+    s.held = held
+    if (s.hasBand) $.ui.invalidate('ui.render')
+    return { drop: refusalText(held) }
   })
 
   on('turn.step', async function* ($, e, next) {
@@ -616,6 +755,7 @@ export const register: Register = on => {
     if (now - s.lastRequestAt > e.durationMs) s.lastRequestAt = now
     s.compacted = false
     s.ackedAt = 0
+    release($, s)
     const u = e.usage
     if (u) {
       if (u.model) s.lastModel = u.model
@@ -633,7 +773,7 @@ export const register: Register = on => {
         s.misses.push({ at: now, tokens: write, usd })
         if (s.deadline < now + AUTO_WARM_MS) {
           await startWindow($, s, AUTO_WARM_MS, s.every)
-          $.ui.log(`cold write of ${fmtTok(write)} tokens paid (${fmtUsd(usd)}). Keeping the cache warm for ${fmtDuration(AUTO_WARM_MS)} so it is not paid again today; turn it off in /mods to stop.`)
+          $.ui.log(paidText(fmtTok(write), fmtUsd(usd)))
         }
       }
     }
@@ -648,6 +788,7 @@ export const register: Register = on => {
       s.compacted = true
       s.ctx = 0
       s.ackedAt = 0
+      release($, s)
       disarm(s)
       await arm($, s)
     }

@@ -9,19 +9,20 @@ export type Strings = {
     none: string
     compacted: string
     warm: (left: string) => string
+    kept: (left: string) => string
     cold: (since: string) => string
     keepWarm: (left: string) => string
-    keepWarmOff: string
-    stopped: (why: string) => string
+    stopped: string
   }
   labels: {
-    model: string
     cache: string
+    keepWarm: string
+    nextPing: string
+    lastPing: string
+    model: string
     context: string
     coldWrite: string
-    keepWarm: string
     breakEven: string
-    guard: string
     session: string
   }
   values: {
@@ -32,18 +33,16 @@ export type Strings = {
     warm: (left: string) => string
     tokens: (n: string) => string
     coldWrite: (cold: string, warm: string) => string
-    keepWarmOn: (left: string, next: string, always: boolean) => string
+    keepWarmOn: (left: string, always: boolean) => string
+    stopped: (always: boolean) => string
+    offAlways: (window: string) => string
+    off: string
     nextFirstTurn: string
     nextAfterCompaction: string
     nextCold: (every: string) => string
     nextPing: (inTime: string) => string
     lastPing: (read: string, usd: string) => string
-    stopped: (why: string, always: boolean) => string
-    offAlways: (window: string) => string
-    off: string
-    breakEven: (pings: number, idle: string, every: string) => string
-    guardRefuse: string
-    guardWarn: string
+    breakEven: (pings: number, idle: string) => string
     session: (count: number, usd: string) => string
   }
   warm: {
@@ -52,17 +51,21 @@ export type Strings = {
     custom: string
     customHelp: string
     start: string
+    off: string
+    offHelp: (left: string) => string
     always: string
     alwaysHelp: (window: string) => string
-    off: string
-    offHelp: string
     cost: string
+    breakEven: (pings: number, idle: string, every: string) => string
+    stoppedBecause: (why: string) => string
   }
   guard: {
     label: string
     help: string
     refuse: string
     warn: string
+    refuseNow: string
+    warnNow: string
   }
   messages: {
     badDuration: string
@@ -73,7 +76,7 @@ export type Strings = {
     alwaysOn: (window: string) => string
     coldNote: (every: string) => string
     off: string
-    offAlways: string
+    offAlways: (window: string) => string
     guardRefuse: string
     guardWarn: string
   }
@@ -81,24 +84,25 @@ export type Strings = {
 
 const en: Strings = {
   title: 'Keep warm',
-  sections: { status: 'Status', warm: 'Keep warm', guard: 'Guard' },
+  sections: { status: 'Status', warm: 'Keep warm', guard: 'Cold send guard' },
   summary: {
-    none: 'no request yet this session',
-    compacted: 'waiting for the first turn after compaction',
+    none: 'no request yet',
+    compacted: 'reset by compaction',
     warm: left => `warm · cold in ${left}`,
+    kept: left => `warm · kept warm ${left}`,
     cold: since => `cold for ${since}`,
     keepWarm: left => `keep warm ${left} left`,
-    keepWarmOff: 'keep warm off',
-    stopped: why => `keep warm stopped: ${why}`,
+    stopped: 'keep warm stopped',
   },
   labels: {
-    model: 'Model',
     cache: 'Cache',
+    keepWarm: 'Keep warm',
+    nextPing: 'Next ping',
+    lastPing: 'Last ping',
+    model: 'Model',
     context: 'Context',
     coldWrite: 'Cold write',
-    keepWarm: 'Keep warm',
     breakEven: 'Break-even',
-    guard: 'Guard',
     session: 'This session',
   },
   values: {
@@ -108,38 +112,40 @@ const en: Strings = {
     cold: since => `cold, last request ${since} ago`,
     warm: left => `warm, cold in ${left}`,
     tokens: n => `${n} tokens`,
-    coldWrite: (cold, warm) => `${cold} to re-write it (a warm turn ${warm})`,
-    keepWarmOn: (left, next, always) => `on, ${left} left${next}${always ? ' (always)' : ''}`,
-    nextFirstTurn: ' · waiting for the first turn',
-    nextAfterCompaction: ' · waiting for the first turn after compaction',
-    nextCold: every => ` · cold now, first ping ${every} after the next turn`,
-    nextPing: inTime => ` · ping in ${inTime}`,
-    lastPing: (read, usd) => ` · last ping read ${read} ${usd}`,
-    stopped: (why, always) => `stopped, ${why}${always ? ' (always)' : ''}`,
-    offAlways: window => `off until the next session start, which arms ${window} (always)`,
+    coldWrite: (cold, warm) => `${cold} to re-write (warm turn ${warm})`,
+    keepWarmOn: (left, always) => `on, ${left} left${always ? ' · every session' : ''}`,
+    stopped: always => `stopped${always ? ' · every session' : ''}`,
+    offAlways: window => `off · the next session starts with ${window}`,
     off: 'off',
-    breakEven: (pings, idle, every) => `up to ${pings} pings at the read rate cost one cold write, about ${idle} of idle at one ping per ${every}`,
-    guardRefuse: 'stop a cold send once, with its price',
-    guardWarn: 'only show the price of a cold send',
+    nextFirstTurn: 'after the first turn',
+    nextAfterCompaction: 'after the first turn since compaction',
+    nextCold: every => `cold now, ${every} after the next turn`,
+    nextPing: inTime => `in ${inTime}`,
+    lastPing: (read, usd) => `read ${read} tokens, ${usd}`,
+    breakEven: (pings, idle) => `up to ${pings} pings, ${idle} idle`,
     session: (count, usd) => `${count} cold write${count === 1 ? '' : 's'} paid, ${usd}`,
   },
   warm: {
     window: 'Keep warm for',
-    windowHelp: 'A ping after each idle stretch keeps the cache read instead of re-written',
+    windowHelp: 'Starts a window: a ping after each idle stretch keeps the cache read instead of re-written',
     custom: 'Other duration',
     customHelp: 'Such as 90m or 2h30m',
-    start: 'start',
-    always: 'Every session',
-    alwaysHelp: window => `Each session starts with a ${window} window`,
-    off: 'Turn off',
-    offHelp: 'Stops the window and the every-session switch',
+    start: 'Start',
+    off: 'Stop',
+    offHelp: left => `Ends the window now, ${left} early`,
+    always: 'Keep warm every session',
+    alwaysHelp: window => `Each new session starts with a ${window} window`,
     cost: 'Pings are model requests: each reads the cached context at the read rate, far below a cold re-write.',
+    breakEven: (pings, idle, every) => `Up to ${pings} pings at the read rate cost one cold write, about ${idle} of idle at one ping per ${every}.`,
+    stoppedBecause: why => `Keep warm stopped: ${why}.`,
   },
   guard: {
-    label: 'Cold send',
-    help: 'What happens when you send to a cold cache of a big context',
-    refuse: 'stop once',
-    warn: 'warn only',
+    label: 'On a cold send',
+    help: 'When the cache went cold on a context of 50k tokens or more',
+    refuse: 'Stop once',
+    warn: 'Warn only',
+    refuseNow: 'A cold send is stopped once with its price; sending it again pays it.',
+    warnNow: 'A cold send goes through; its price is noted in the transcript.',
   },
   messages: {
     badDuration: 'keep warm takes a window such as 6h or 90m',
@@ -147,10 +153,10 @@ const en: Strings = {
     alwaysOff: 'keep warm no longer arms itself at session start',
     armed: (window, every) => `keepwarm on for ${window}, a ping ${every} after each idle stretch keeps the cache read, not re-written`,
     armedCold: (window, every) => `keepwarm on for ${window}. The cache is cold now, so the first ping comes ${every} after the next turn`,
-    alwaysOn: window => `keepwarm always on: every session starts with a ${window} window; Turn off in /mods ends it for good`,
+    alwaysOn: window => `keepwarm always on: every session starts with a ${window} window; switch Keep warm every session off in /mods to end it`,
     coldNote: every => `. The cache is cold now, so the first ping comes ${every} after the next turn`,
     off: 'keepwarm is off',
-    offAlways: 'keepwarm is off, and no longer arms itself at session start',
+    offAlways: window => `keepwarm is off for this session; every new session still starts with a ${window} window`,
     guardRefuse: 'guard set to refuse once: a cold send is dropped with its price, the resend goes through',
     guardWarn: 'guard set to warn: a cold send goes through with its price shown',
   },
@@ -158,24 +164,25 @@ const en: Strings = {
 
 const pt: Strings = {
   title: 'Manter aquecido',
-  sections: { status: 'Estado', warm: 'Manter aquecido', guard: 'Proteção' },
+  sections: { status: 'Estado', warm: 'Manter aquecido', guard: 'Proteção contra envio a frio' },
   summary: {
-    none: 'nenhuma requisição nesta sessão ainda',
-    compacted: 'esperando o primeiro turno depois da compactação',
+    none: 'nenhuma requisição ainda',
+    compacted: 'zerado pela compactação',
     warm: left => `aquecido · esfria em ${left}`,
+    kept: left => `aquecido · mantido por ${left}`,
     cold: since => `frio há ${since}`,
     keepWarm: left => `aquecimento por mais ${left}`,
-    keepWarmOff: 'aquecimento desligado',
-    stopped: why => `aquecimento parou: ${why}`,
+    stopped: 'aquecimento parou',
   },
   labels: {
-    model: 'Modelo',
     cache: 'Cache',
+    keepWarm: 'Aquecimento',
+    nextPing: 'Próximo ping',
+    lastPing: 'Último ping',
+    model: 'Modelo',
     context: 'Contexto',
     coldWrite: 'Escrita a frio',
-    keepWarm: 'Aquecimento',
     breakEven: 'Empate',
-    guard: 'Proteção',
     session: 'Esta sessão',
   },
   values: {
@@ -185,38 +192,40 @@ const pt: Strings = {
     cold: since => `frio, última requisição há ${since}`,
     warm: left => `aquecido, esfria em ${left}`,
     tokens: n => `${n} tokens`,
-    coldWrite: (cold, warm) => `${cold} para reescrever (um turno aquecido ${warm})`,
-    keepWarmOn: (left, next, always) => `ligado, mais ${left}${next}${always ? ' (sempre)' : ''}`,
-    nextFirstTurn: ' · esperando o primeiro turno',
-    nextAfterCompaction: ' · esperando o primeiro turno depois da compactação',
-    nextCold: every => ` · frio agora, primeiro ping ${every} depois do próximo turno`,
-    nextPing: inTime => ` · ping em ${inTime}`,
-    lastPing: (read, usd) => ` · último ping leu ${read} ${usd}`,
-    stopped: (why, always) => `parado, ${why}${always ? ' (sempre)' : ''}`,
-    offAlways: window => `desligado até a próxima sessão, que liga ${window} (sempre)`,
+    coldWrite: (cold, warm) => `${cold} para reescrever (aquecido ${warm})`,
+    keepWarmOn: (left, always) => `ligado, mais ${left}${always ? ' · em toda sessão' : ''}`,
+    stopped: always => `parado${always ? ' · em toda sessão' : ''}`,
+    offAlways: window => `desligado · a próxima sessão começa com ${window}`,
     off: 'desligado',
-    breakEven: (pings, idle, every) => `até ${pings} pings na taxa de leitura custam uma escrita a frio, cerca de ${idle} parado com um ping a cada ${every}`,
-    guardRefuse: 'segura um envio a frio uma vez, com o preço',
-    guardWarn: 'só mostra o preço de um envio a frio',
+    nextFirstTurn: 'depois do primeiro turno',
+    nextAfterCompaction: 'depois do primeiro turno desde a compactação',
+    nextCold: every => `frio agora, ${every} depois do próximo turno`,
+    nextPing: inTime => `em ${inTime}`,
+    lastPing: (read, usd) => `leu ${read} tokens, ${usd}`,
+    breakEven: (pings, idle) => `até ${pings} pings, ${idle} parado`,
     session: (count, usd) => `${count} escrita${count === 1 ? '' : 's'} a frio paga${count === 1 ? '' : 's'}, ${usd}`,
   },
   warm: {
     window: 'Manter por',
-    windowHelp: 'Um ping depois de cada pausa mantém o cache sendo lido em vez de reescrito',
+    windowHelp: 'Inicia uma janela: um ping depois de cada pausa mantém o cache sendo lido em vez de reescrito',
     custom: 'Outra duração',
     customHelp: 'Como 90m ou 2h30m',
-    start: 'iniciar',
-    always: 'Em toda sessão',
-    alwaysHelp: window => `Toda sessão começa com uma janela de ${window}`,
-    off: 'Desligar',
-    offHelp: 'Para a janela e o liga-em-toda-sessão',
+    start: 'Iniciar',
+    off: 'Parar',
+    offHelp: left => `Encerra a janela agora, ${left} antes do fim`,
+    always: 'Manter aquecido em toda sessão',
+    alwaysHelp: window => `Toda sessão nova começa com uma janela de ${window}`,
     cost: 'Pings são requisições ao modelo: cada um lê o contexto em cache na taxa de leitura, bem abaixo de uma reescrita a frio.',
+    breakEven: (pings, idle, every) => `Até ${pings} pings na taxa de leitura custam uma escrita a frio, cerca de ${idle} parado com um ping a cada ${every}.`,
+    stoppedBecause: why => `O aquecimento parou: ${why}.`,
   },
   guard: {
-    label: 'Envio a frio',
-    help: 'O que acontece quando você envia para um cache frio de um contexto grande',
-    refuse: 'segurar uma vez',
-    warn: 'só avisar',
+    label: 'Num envio a frio',
+    help: 'Quando o cache esfriou num contexto de 50k tokens ou mais',
+    refuse: 'Segurar uma vez',
+    warn: 'Só avisar',
+    refuseNow: 'Um envio a frio é segurado uma vez com o preço; enviar de novo paga.',
+    warnNow: 'Um envio a frio passa; o preço fica registrado na conversa.',
   },
   messages: {
     badDuration: 'o aquecimento aceita uma janela como 6h ou 90m',
@@ -224,10 +233,10 @@ const pt: Strings = {
     alwaysOff: 'o aquecimento não liga mais sozinho no início da sessão',
     armed: (window, every) => `aquecimento ligado por ${window}: um ping ${every} depois de cada pausa mantém o cache sendo lido, não reescrito`,
     armedCold: (window, every) => `aquecimento ligado por ${window}. O cache está frio agora, então o primeiro ping vem ${every} depois do próximo turno`,
-    alwaysOn: window => `aquecimento sempre ligado: toda sessão começa com uma janela de ${window}; Desligar em /mods encerra de vez`,
+    alwaysOn: window => `aquecimento sempre ligado: toda sessão começa com uma janela de ${window}; desligue Manter aquecido em toda sessão em /mods para encerrar`,
     coldNote: every => `. O cache está frio agora, então o primeiro ping vem ${every} depois do próximo turno`,
     off: 'aquecimento desligado',
-    offAlways: 'aquecimento desligado, e não liga mais sozinho no início da sessão',
+    offAlways: window => `aquecimento desligado nesta sessão; toda sessão nova ainda começa com uma janela de ${window}`,
     guardRefuse: 'proteção: um envio a frio é segurado uma vez com o preço, o reenvio passa',
     guardWarn: 'proteção: um envio a frio passa, com o preço mostrado',
   },
