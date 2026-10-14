@@ -3,7 +3,7 @@ import type { CachetaxActArgs, CachetaxActResult, CachetaxCatalogEntry, Cachetax
 import { STRINGS } from './i18n'
 import type { Lang, Strings } from './i18n'
 import { statusIcons } from './status-icons'
-import { action, icon, kitOf, notice, status, text } from './kit/kit'
+import { action, icon, kitOf, notice, staticTree, status, text } from './kit/kit'
 import type { Kit, KitUi } from './kit/kit'
 import { NATIVE, NATIVE_NAME, toneOf } from './kit/tone'
 import type { KitSkin, KitTone, Tone } from './kit/tone'
@@ -542,13 +542,6 @@ export function heldNotice(k: Kit, h: Held, dismiss: () => void): RenderElement 
       (h.warmUsd == null ? '.' : ` (a warm turn would have cost ${h.warmUsd}).`), 'muted', { key: 'facts' }),
     text(k, `Send it again to pay it, and keep warm will then hold the cache for ${h.autoWarm}. Or /clear and start from a note.`, 'faint', { key: 'way' }),
   ], [action(k, 'cachetax-held-dismiss', 'Dismiss', dismiss, { dismiss: true })])
-}
-
-/** A tree another mod can draw: plain data, every handler left out, so a sample's Button shows and presses nothing. */
-export function staticTree<T>(node: T): T {
-  if (Array.isArray(node)) return node.map(staticTree) as T
-  if (node === null || typeof node !== 'object') return node
-  return Object.fromEntries(Object.entries(node).filter(([, value]) => typeof value !== 'function').map(([key, value]) => [key, staticTree(value)])) as T
 }
 
 // The figures the catalog draws its samples with.
