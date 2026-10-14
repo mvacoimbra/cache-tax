@@ -26,7 +26,7 @@ claude plugin install cache-tax@claude-code-mods
 
 Restart Claude Code or run `/reload-plugins` in an open session. No early-access flag is needed. If you set `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS` previously, remove it; current Claude Code ignores it.
 
-In a warm session, open `/mods`, go to the Keep warm tab and pick a window (6h, or type one such as 90m). Turn off there to stop. The `/mods` pane comes from the [claude-mods-hub](https://github.com/mvacoimbra/claude-mods-hub) mod.
+In a warm session, open `/mods`, go to the Keep warm tab and pick a window (6h, or type one such as 90m). Stop there ends it early. The `/mods` pane comes from the [claude-mods-hub](https://github.com/mvacoimbra/claude-mods-hub) mod.
 
 **Check the main cache lifetime.** Included subscription usage defaults to one hour. API-key, usage-credit and cloud-provider sessions default to five minutes, so set [`promptCacheTtl`](https://code.claude.com/docs/en/prompt-caching#choose-the-ttl-yourself) to `"1h"` for those billing paths. A 50-minute timer cannot protect a five-minute main cache. See [Limits](#limits) for the fork evidence.
 
@@ -40,7 +40,7 @@ In a warm session, open `/mods`, go to the Keep warm tab and pick a window (6h, 
 
 A detected cold write automatically arms at least three hours of keepwarm. The tab's Status section shows the current cache estimate, warming window and this session's cold-write tally.
 
-Windows belong to individual sessions. An already-cold session waits for your next turn before pinging. A window ends at its deadline; Turn off in the tab also cancels it and clears the every-session switch.
+Windows belong to individual sessions. An already-cold session waits for your next turn before pinging. A window ends at its deadline; Stop in the tab ends it early. The every-session switch and the guard are your settings: set in one session, they hold in every other within a few seconds.
 
 ### A recorded warming ping
 
@@ -62,11 +62,13 @@ There are no slash commands: everything is in the Keep warm tab of `/mods`, in E
 
 | Section | What it holds |
 |---|---|
-| Status | Whether the cache is warm and when it goes cold, the warming window with its next ping and last receipt, the model, the context, the cold-write price, the break-even and this session's cold writes |
-| Keep warm | One press for 1h, 3h, 6h, 12h or 24h; a field for any other window (90m, 2h30m, or `6h every 2m`, a testing knob with a 1m floor that lasts only for that window); Every session, which arms six hours at each session start; Turn off, which stops the window and the every-session switch |
-| Guard | Stop a cold send once, the resend goes through (this mod's default), or warn only and send (the hook's default) |
+| Status | Whether the cache is warm and when it goes cold, the keep-warm window, its next ping and last receipt, the model, the context, the cold-write price, the break-even and this session's cold writes |
+| Keep warm | One press for 1h, 3h, 6h, 12h or 24h; a field for any other window (90m, 2h30m, or `6h every 2m`, a testing knob with a 1m floor that lasts only for that window); Stop, which ends the window early. These three are marked "this session only". Then Keep warm every session, which arms six hours at each session start, and why a stopped loop stopped |
+| Cold send guard | Stop a cold send once, the resend goes through (this mod's default), or warn only and send (the hook's default) |
 
-Every row and message this mod draws (the band row in each state, the status line text, the guard's messages) is named in the Components tab of `/mods`.
+The every-session switch and the guard live in the mod's store, one per user: the tab reads them back before it draws and every 3 seconds, so a change in one session shows in every other. The keep-warm window stays with the session that started it.
+
+Every row and message this mod draws (the band row in each state, the held-send notice, the status line text, the guard's and the log's lines) is named in the Components tab of `/mods`.
 
 With [skins](https://github.com/mvacoimbra/claude-skins) installed and its usage band on, the time until the cache goes cold shows in that band, and this mod's own row steps aside.
 
@@ -76,11 +78,13 @@ The refusal, verbatim:
 
 The figure is an upper bound. The context count the engine reports for a resumed session is the last response's input, cache read, cache write and output together, and the resume payload carries no separate output count to take off; on one 15-day-old session the refusal said 330,316 tokens and $6.61 and the write that followed was 314k tokens, $6.28.
 
-While keepwarm is armed, the terminal and Desktop Code tab show a row above the prompt with the Cache Tax cube. Its lid is green for warm, orange for cold, and grey before the first turn or after compaction. The bold state label matches; the timer and receipt text use normal weight. Ghostty and kitty can draw the image; other terminals show `[>]` in its place. A nonempty `NO_COLOR` selects a bold text icon and an uncolored state label. The row also says `warm`, `cold` or `unknown`, so color is never the only signal. These states use the same one-hour clock as the tab; they are estimates, not a live server cache check.
+While the guard holds a cold send, the terminal and Desktop Code tab also show a notice above the prompt with the same figures and a Dismiss button. It goes away when you send again, dismiss it, or the next turn lands.
 
-The row includes the warming window, next ping and last readback. A stopped loop shows a neutral symbol and its reason. Turn off or an expired window removes the row. Surveys temporarily take priority, and other mods' content stays in the band. Sessions without this band retain the plain status text.
+While keepwarm is armed, the terminal and Desktop Code tab show a row above the prompt in the pack's shared style: the cache icon (the Cache Tax cube on terminals that draw images), `Cache`, the state as a dot and a word, and the countdown in skins' wording, such as `kept warm 5h12 · ping in 38m`. The word is `warm` (green), `cold` (red), `stopped` (red, with its reason) or `waiting` (grey, before the first turn or after compaction), so color is never the only signal. Colours come from the skin chosen in skins, Claude Code's own without it. Other terminals show `[>]` in place of the cube. A nonempty `NO_COLOR` selects a bold `[>]` and an uncolored state word. These states use the same one-hour clock as the tab; they are estimates, not a live server cache check.
 
-The cube follows Claude's light or dark theme. Its terminal image also has a contrasting edge for terminal backgrounds that differ from that setting. The embedded assets come from the website's official SVGs; maintainers can regenerate them with `python3 tools/generate-status-icons.py` and `rsvg-convert` installed. No image files are read or fetched at runtime.
+The row includes the warming window, next ping and last readback. Stop or an expired window removes the row. Surveys temporarily take priority, and other mods' content stays in the band. Sessions without this band retain the plain status text.
+
+The icon and the cube follow Claude's light or dark theme. The cube's terminal image also has a contrasting edge for terminal backgrounds that differ from that setting. The embedded assets come from the website's official SVGs; maintainers can regenerate them with `python3 tools/generate-status-icons.py` and `rsvg-convert` installed. No image files are read or fetched at runtime.
 
 The mod reads the theme and `NO_COLOR` once when the session starts. Accepted theme changes update the icon immediately; ordinary redraws do not reread either setting. Set `NO_COLOR` before starting the session.
 
@@ -90,16 +94,16 @@ The hook and the mod share a name and a job, so having both means two guards on 
 
 ## What it can reach
 
-Validated on Claude Code 2.1.289:
+Validated on Claude Code 2.1.290:
 
-    ❯ ./register.ts hooks: config.set{key=theme}, ui.render{component=AbovePrompt}, session.start, classic.SessionStart, command.run{command=keepwarm}, command.run{command=cache-tax}, prompt.submit, turn.step, turn.complete, session.compact
-    ❯ ./register.ts calls: $.clock.after (via arm), $.clock.now, $.command.list, $.command.register, $.config.list, $.env.get, $.model.fork (via ping), $.session.id, $.session.model, $.session.usage, $.store.delete (via prune, startWindow, stop), $.store.get, $.store.set, $.ui.invalidate, $.ui.log, $.ui.resolve, $.ui.status
+    ❯ ./register.ts hooks: engine.create, cachetax.panel, cachetax.act, cachetax.state, cachetax.catalog, config.set{key=theme}, ui.render{component=AbovePrompt}, session.start, classic.SessionStart, prompt.submit, turn.step, turn.complete, session.compact
+    ❯ ./register.ts calls: $.clock.after (via arm), $.clock.every, $.clock.now, $.command.list, $.config.list, $.env.get, $.model.fork (via ping), $.session.id, $.session.model, $.session.usage, $.skins.band (via skinsShowsCache), $.skins.palette (via skinOf), $.store.delete (via actOn, prune, startWindow, stop), $.store.get, $.store.set (via actOn, startWindow), $.ui.invalidate, $.ui.log, $.ui.resolve, $.ui.status
     ❯ ./register.ts env reads: NO_COLOR
 
 Reach L2, drives Claude. Sees every prompt you type, every model request's timing and every answer's token counts.
 
     Threat model for cache-tax (reach L2, drives Claude)
-    1. Reads:    of each prompt, whether it starts with a slash and nothing else (the text is passed on untouched, never kept, never logged); the time; the token counts and model id the engine already holds on turn.complete and on the fork's reply; the resume fields Claude Code computes for settings hooks; the command list, the session id and, when a resumed session's fields carry no model id, the session's model once at start; from its own $.store, the keepwarm deadline and the ping period keyed by session id, plus the global always switch and guard mode
+    1. Reads:    of each prompt, whether it starts with a slash and nothing else (the text is passed on untouched, never kept, never logged); the time; the token counts and model id the engine already holds on turn.complete and on the fork's reply; the resume fields Claude Code computes for settings hooks; the command list, the session id and, when a resumed session's fields carry no model id, the session's model once at start; from its own $.store, the keepwarm deadline and the ping period keyed by session id, plus the user's always switch and guard mode, read again before the /mods tab draws, before a cold send is judged, and every 3 seconds
     2. Runs:     one $.model.fork per idle stretch inside a keepwarm window, one per ping period (50 minutes unless the testing knob set it, floor 1 minute), never outside the window, never onto a cache the mod already knows is cold, never after a readback that read nothing or wrote at least a tenth of what it read
     3. Sends:    nothing leaves the machine except the fork, an API request over the session's own transcript with a fixed one-line prompt
     4. Persists: in $.store, the keepwarm deadline and the ping period under this session's id, and the always switch and the guard mode for every session; a window that has ended is deleted at stop and at this session's next start, together with the bare keys of a 2.1.0 store; another session's keys are never deleted here, because a read followed by a delete cannot be made atomic against that session renewing its window, so a session that armed keepwarm and never came back leaves two small keys behind; the session's cold-write tally lives in memory and dies with the session
@@ -136,7 +140,7 @@ The mock-clock tests prove the timer, the guard and the scoring, not that a fork
 
 Then type `1h every 1m` in the tab's Other duration field.
 
-Watch the row above the prompt after a minute, or the plain status text on other surfaces. `last ping read 20k $0.01` reports the fork's readback. `keepwarm stopped: the ping read ... and wrote ...` means the readback did not meet the warm threshold; the loop has stopped. An API failure, interruption, empty reply or missing conversation also stops the loop with a reason. Older engines that return null show a combined cold-snapshot or API-failure message. Finish with Turn off. This short check establishes a cache read, not retention across the default 50-minute interval.
+Watch the row above the prompt after a minute, or the plain status text on other surfaces. `last ping read 20k $0.01` reports the fork's readback. `keepwarm stopped: the ping read ... and wrote ...` means the readback did not meet the warm threshold; the loop has stopped. An API failure, interruption, empty reply or missing conversation also stops the loop with a reason. Older engines that return null show a combined cold-snapshot or API-failure message. Finish with Stop. This short check establishes a cache read, not retention across the default 50-minute interval.
 
 ## Tests and typecheck
 
