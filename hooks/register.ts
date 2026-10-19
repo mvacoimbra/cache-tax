@@ -19,6 +19,8 @@ const KEY_DEADLINE = 'deadline'
 const KEY_EVERY = 'every'
 const KEY_GUARD = 'guard'
 const KEY_ALWAYS = 'always'
+// The window every new session starts with when Keep warm every session is on: the user's.
+const KEY_DEFAULT_WINDOW = 'defaultWindow'
 
 // $ per million tokens, [cache read, 1h cache write, output], list prices September 2026.
 // Longer family names first: a model id matches the first row it contains.
@@ -45,6 +47,8 @@ export type State = {
   deadline: number
   every: number
   always: boolean
+  // The every-session window, in ms (DEFAULT_WINDOW_MS until the user picks another).
+  defaultWindow: number
   lastRequestAt: number
   lastModel: string | null
   ctx: number
@@ -310,7 +314,15 @@ async function startWindow($: EngineInterface, s: State, windowMs: number, every
 }
 
 // The windows the tab offers with one press; any other is typed.
-const WINDOWS = ['1h', '3h', '6h', '12h', '24h']
+const WINDOWS = ['1h', '3h', '6h', '8h', '12h', '24h']
+
+// The every-session window as the choice shows it: one of WINDOWS, or its own label when typed.
+const windowMs = (label: string): number => parseDuration(label) ?? 0
+const labelOfWindow = (ms: number): string => WINDOWS.find(w => windowMs(w) === ms) ?? fmtDuration(ms)
+const windowOptions = (ms: number) => {
+  const labels = WINDOWS.includes(labelOfWindow(ms)) ? WINDOWS : [...WINDOWS, labelOfWindow(ms)]
+  return labels.map(w => ({ value: w, label: w }))
+}
 
 const REFRESH_MS = 15 * 1000
 
@@ -318,13 +330,17 @@ const REFRESH_MS = 15 * 1000
 // session reaches this one.
 const SYNC_MS = 3 * 1000
 
-/** Reads the user's settings (the guard and the every-session switch) back from the store, the only place they live; true when either changed since the last read. The keep-warm window is this session's own and is not touched. */
+/** Reads the user's settings (the guard, the every-session switch and its window) back from the store, the only place they live; true when either changed since the last read. The keep-warm window is this session's own and is not touched. */
 export async function syncSettings($: EngineInterface, s: State): Promise<boolean> {
   const guard: GuardMode = (await $.store.get(KEY_GUARD)) === 'warn' ? 'warn' : 'refuse'
   const always = (await $.store.get(KEY_ALWAYS)) === true
-  if (guard === s.guard && always === s.always) return false
+  const stored = await $.store.get(KEY_DEFAULT_WINDOW)
+  const parsed = typeof stored === 'string' ? parseDuration(stored) : null
+  const defaultWindow = parsed !== null && parsed > 0 ? parsed : DEFAULT_WINDOW_MS
+  if (guard === s.guard && always === s.always && defaultWindow === s.defaultWindow) return false
   s.guard = guard
   s.always = always
+  s.defaultWindow = defaultWindow
   return true
 }
 
@@ -363,7 +379,7 @@ export function panelOf(s: State, now: number, lang: Lang): CachetaxPanel {
     : t.values.nextPing(fmtDuration(s.lastRequestAt + s.every - now))
   const keepWarm = s.deadline ? t.values.keepWarmOn(left, s.always)
     : s.stopped ? t.values.stopped(s.always)
-    : s.always ? t.values.offAlways(fmtDuration(DEFAULT_WINDOW_MS))
+    : s.always ? t.values.offAlways(fmtDuration(s.defaultWindow))
     : t.values.off
   const status: CachetaxItem[] = [
     { kind: 'info', label: t.labels.cache, tone: cold ? 'err' : known ? 'ok' : 'muted',
@@ -384,7 +400,8 @@ export function panelOf(s: State, now: number, lang: Lang): CachetaxPanel {
     { kind: 'choice', id: 'window', label: t.warm.window, help: t.warm.windowHelp, value: '', options: WINDOWS.map(w => ({ value: w, label: w })), scope: 'session' },
     { kind: 'input', id: 'custom', label: t.warm.custom, help: t.warm.customHelp, placeholder: '90m', submitLabel: t.warm.start, scope: 'session' },
     { kind: 'text', text: t.warm.cost + (pings == null ? '' : ' ' + t.warm.breakEven(pings, fmtDuration(pings * s.every), fmtDuration(s.every))), tone: 'muted' },
-    { kind: 'toggle', id: 'always', label: t.warm.always, help: t.warm.alwaysHelp(fmtDuration(DEFAULT_WINDOW_MS)), value: s.always },
+    { kind: 'toggle', id: 'always', label: t.warm.always, help: t.warm.alwaysHelp(fmtDuration(s.defaultWindow)), value: s.always },
+    { kind: 'choice', id: 'default-window', label: t.warm.defaultWindow, help: t.warm.defaultWindowHelp, value: labelOfWindow(s.defaultWindow), options: windowOptions(s.defaultWindow) },
     // The group's one action, last.
     ...(s.deadline ? [{ kind: 'action', id: 'off', title: t.warm.offTitle, label: t.warm.off, help: t.warm.offHelp(left), scope: 'session' } as const] : []),
   ]
@@ -433,13 +450,20 @@ async function actOn($: EngineInterface, s: State, args: CachetaxActArgs, lang: 
       }
       s.always = true
       await $.store.set(KEY_ALWAYS, true)
-      await startWindow($, s, DEFAULT_WINDOW_MS, PING_AFTER_MS)
-      return { message: t.messages.alwaysOn(fmtDuration(DEFAULT_WINDOW_MS)) + (isCold(s, now) ? t.messages.coldNote(fmtDuration(s.every)) : '') }
+      await startWindow($, s, s.defaultWindow, PING_AFTER_MS)
+      return { message: t.messages.alwaysOn(fmtDuration(s.defaultWindow)) + (isCold(s, now) ? t.messages.coldNote(fmtDuration(s.every)) : '') }
+    }
+    case 'default-window': {
+      const ms = parseDuration(args.value ?? '')
+      if (ms === null || ms <= 0) return { message: t.messages.badDuration }
+      s.defaultWindow = ms
+      await $.store.set(KEY_DEFAULT_WINDOW, args.value)
+      return { message: t.messages.defaultWindow(fmtDuration(ms)) }
     }
     case 'off': {
       // This session's window only; the every-session switch is the user's and has its own toggle.
       await stop($, s, null)
-      return { message: s.always ? t.messages.offAlways(fmtDuration(DEFAULT_WINDOW_MS)) : t.messages.off }
+      return { message: s.always ? t.messages.offAlways(fmtDuration(s.defaultWindow)) : t.messages.off }
     }
     case 'guard': {
       if (args.value !== 'warn' && args.value !== 'refuse') return {}
@@ -588,7 +612,7 @@ export function catalogOf(ui: ElementTable, surface: RenderSurface, lang: Lang, 
 
 export function freshState(): State {
   return {
-    hasBand: false, sid: '', deadline: 0, every: PING_AFTER_MS, always: false, lastRequestAt: 0, lastModel: null, ctx: 0, compacted: false,
+    hasBand: false, sid: '', deadline: 0, every: PING_AFTER_MS, always: false, defaultWindow: DEFAULT_WINDOW_MS, lastRequestAt: 0, lastModel: null, ctx: 0, compacted: false,
     guard: 'refuse', ackedAt: 0, coldWritePending: false, misses: [], pending: null, last: null, stopped: null, held: null,
   }
 }
@@ -676,7 +700,7 @@ export const register: Register = on => {
     await syncSettings($, s)
     sync ??= $.clock.every(SYNC_MS, () => { void syncSettings($, s) })
     // Always means a fresh default window every session, whatever the last one left behind.
-    if (s.always) await startWindow($, s, DEFAULT_WINDOW_MS, PING_AFTER_MS)
+    if (s.always) await startWindow($, s, s.defaultWindow, PING_AFTER_MS)
     const usage = await $.session.usage()
     if (usage.context.tokens) s.ctx = usage.context.tokens
     // The hook form of cache-tax ships a /cache-tax:status skill; both installed means two guards.

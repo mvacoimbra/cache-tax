@@ -56,6 +56,8 @@ export type Strings = {
     offHelp: (left: string) => string
     always: string
     alwaysHelp: (window: string) => string
+    defaultWindow: string
+    defaultWindowHelp: string
     cost: string
     breakEven: (pings: number, idle: string, every: string) => string
     stoppedBecause: (why: string) => string
@@ -75,6 +77,7 @@ export type Strings = {
     armed: (window: string, every: string) => string
     armedCold: (window: string, every: string) => string
     alwaysOn: (window: string) => string
+    defaultWindow: (window: string) => string
     coldNote: (every: string) => string
     off: string
     offAlways: (window: string) => string
@@ -137,6 +140,8 @@ const en: Strings = {
     offHelp: left => `Ends the window now, ${left} early`,
     always: 'Keep warm every session',
     alwaysHelp: window => `Each new session starts with a ${window} window`,
+    defaultWindow: 'Window for every session',
+    defaultWindowHelp: 'How long each new session is kept warm when Keep warm every session is on',
     cost: 'Pings are model requests: each reads the cached context at the read rate, far below a cold re-write.',
     breakEven: (pings, idle, every) => `Up to ${pings} pings at the read rate cost one cold write, about ${idle} of idle at one ping per ${every}.`,
     stoppedBecause: why => `Keep warm stopped: ${why}.`,
@@ -155,6 +160,7 @@ const en: Strings = {
     alwaysOff: 'keep warm no longer arms itself at session start',
     armed: (window, every) => `keepwarm on for ${window}, a ping ${every} after each idle stretch keeps the cache read, not re-written`,
     armedCold: (window, every) => `keepwarm on for ${window}. The cache is cold now, so the first ping comes ${every} after the next turn`,
+    defaultWindow: window => `every new session will start with a ${window} window`,
     alwaysOn: window => `keepwarm always on: every session starts with a ${window} window; switch Keep warm every session off in /mods to end it`,
     coldNote: every => `. The cache is cold now, so the first ping comes ${every} after the next turn`,
     off: 'keepwarm is off',
@@ -218,6 +224,8 @@ const pt: Strings = {
     offHelp: left => `Encerra a janela agora, ${left} antes do fim`,
     always: 'Manter aquecido em toda sessão',
     alwaysHelp: window => `Toda sessão nova começa com uma janela de ${window}`,
+    defaultWindow: 'Janela de toda sessão',
+    defaultWindowHelp: 'Por quanto tempo cada sessão nova fica aquecida quando Manter aquecido em toda sessão está ligado',
     cost: 'Pings são requisições ao modelo: cada um lê o contexto em cache na taxa de leitura, bem abaixo de uma reescrita a frio.',
     breakEven: (pings, idle, every) => `Até ${pings} pings na taxa de leitura custam uma escrita a frio, cerca de ${idle} parado com um ping a cada ${every}.`,
     stoppedBecause: why => `O aquecimento parou: ${why}.`,
@@ -236,6 +244,7 @@ const pt: Strings = {
     alwaysOff: 'o aquecimento não liga mais sozinho no início da sessão',
     armed: (window, every) => `aquecimento ligado por ${window}: um ping ${every} depois de cada pausa mantém o cache sendo lido, não reescrito`,
     armedCold: (window, every) => `aquecimento ligado por ${window}. O cache está frio agora, então o primeiro ping vem ${every} depois do próximo turno`,
+    defaultWindow: window => `toda sessão nova vai começar com uma janela de ${window}`,
     alwaysOn: window => `aquecimento sempre ligado: toda sessão começa com uma janela de ${window}; desligue Manter aquecido em toda sessão em /mods para encerrar`,
     coldNote: every => `. O cache está frio agora, então o primeiro ping vem ${every} depois do próximo turno`,
     off: 'aquecimento desligado',

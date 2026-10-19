@@ -39,6 +39,7 @@ const HUB: Plugin = {
     })
     on('command.run', { command: 'panel' }, async ($, e) => ({ text: JSON.stringify(await $.cachetax.panel({ lang: e.args === 'pt' ? 'pt' : 'en', surface: 'terminal', columns: 80 })) }))
     on('command.run', { command: 'state' }, async $ => ({ text: JSON.stringify(await $.cachetax.state()) }))
+    on('command.run', { command: 'act' }, async ($, e) => ({ text: JSON.stringify(await $.cachetax.act(JSON.parse(e.args))) }))
     on('command.run', { command: 'catalog' }, async ($, e) => ({ text: JSON.stringify(await $.cachetax.catalog(JSON.parse(e.args))) }))
     on('command.run', { command: 'cache-tax' }, async ($, e) => {
       const words = String(e.args ?? '').trim().split(/\s+/).filter(Boolean)
@@ -677,6 +678,21 @@ describe('keepwarm', () => {
     expect((await $.command.run(run('cache-tax', ''))).text).toMatch(/Keep warm    off · the next session starts with 6h00m/)
   })
 
+  test('the every-session window is the user\'s: a session starts with the one they picked', async ($, on) => {
+    mock.clock(on, { now: START })
+    const store = new Map<string, unknown>([['always', true], ['defaultWindow', '8h']])
+    world(on, [], { store })
+    await $.session.start(session)
+    expect(store.get('deadline:S1')).toBe(START + 8 * HOUR)
+    // Picked from the tab: stored for every session, and the next one starts with it.
+    const picked: { message?: string } = await ask($, 'act', JSON.stringify({ id: 'default-window', value: '12h' }))
+    expect(picked.message).toBe('every new session will start with a 12h00m window')
+    expect(store.get('defaultWindow')).toBe('12h')
+    const panel: CachetaxPanel = await ask($, 'panel', 'en')
+    expect(panel.sections[1]?.items.find(item => 'id' in item && item.id === 'default-window')).toMatchObject({ value: '12h' })
+    expect(panel.sections[1]?.items.find(item => 'id' in item && item.id === 'always')).toMatchObject({ help: 'Each new session starts with a 12h00m window' })
+  })
+
   test('/keepwarm always sets the switch and arms now', async ($, on) => {
     mock.clock(on, { now: START })
     const store = new Map<string, unknown>()
@@ -966,7 +982,7 @@ const SKINS: Plugin = {
   },
 }
 
-const ask = async ($: Parameters<Body>[0], command: 'panel' | 'state' | 'catalog', args = '') =>
+const ask = async ($: Parameters<Body>[0], command: 'panel' | 'state' | 'catalog' | 'act', args = '') =>
   JSON.parse((await $.command.run({ command, args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } } as CommandRunInput)).text ?? '')
 
 describe('the /mods tab', () => {
@@ -991,14 +1007,16 @@ describe('the /mods tab', () => {
     expect(en.sections.map(section => section.id)).toEqual(['status', 'warm', 'guard'])
     expect(en.refreshMs).toBe(15_000)
     const warmItems = en.sections[1]?.items ?? []
-    expect(warmItems.map(item => ('id' in item ? item.id : item.kind))).toEqual(['window', 'custom', 'text', 'always', 'off'])
+    expect(warmItems.map(item => ('id' in item ? item.id : item.kind))).toEqual(['window', 'custom', 'text', 'always', 'default-window', 'off'])
     // The window and its presses are this session's; the every-session switch and the guard are the user's.
-    expect(warmItems.map(item => ('scope' in item ? item.scope : undefined))).toEqual(['session', 'session', undefined, undefined, 'session'])
-    // Five windows: the hub draws them as a select, with none chosen.
+    expect(warmItems.map(item => ('scope' in item ? item.scope : undefined))).toEqual(['session', 'session', undefined, undefined, undefined, 'session'])
+    // Six windows, 8h among them: the hub draws them as a select, with none chosen.
     expect(warmItems[0]).toMatchObject({ kind: 'choice', value: '' })
-    expect((warmItems[0] as Extract<CachetaxItem, { kind: 'choice' }>).options).toHaveLength(5)
+    expect((warmItems[0] as Extract<CachetaxItem, { kind: 'choice' }>).options.map(o => o.value)).toEqual(['1h', '3h', '6h', '8h', '12h', '24h'])
+    // The every-session window: the user's, 6h until they pick another.
+    expect(warmItems[4]).toMatchObject({ kind: 'choice', id: 'default-window', value: '6h' })
     // Stop is named by its title, the button says what it does.
-    expect(warmItems[4]).toMatchObject({ kind: 'action', title: 'Stop keeping warm', label: 'Stop', help: 'Ends the window now, 1h30m early' })
+    expect(warmItems[5]).toMatchObject({ kind: 'action', title: 'Stop keeping warm', label: 'Stop', help: 'Ends the window now, 1h30m early' })
     expect(en.sections[2]?.items.map(item => item.kind)).toEqual(['choice', 'text'])
     expect(en.sections[2]?.items[0]).toMatchObject({ id: 'guard', value: 'refuse' })
     expect(JSON.stringify(en.sections[2])).not.toContain('"scope"')
